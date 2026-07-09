@@ -408,6 +408,39 @@ function closeModal() {
   root.innerHTML = '';
 }
 
+/* ===== Kalorien-Schätzung über MET-Werte =====
+   (Kompendium körperlicher Aktivitäten: Krafttraining mit
+   mehreren Übungen ~3,5 MET; Cardio je nach Gerät.)
+   kcal = MET × Körpergewicht (kg) × Stunden. Bewusst GROB. */
+
+const STRENGTH_MET = 3.5;
+
+const CARDIO_TYPES = [
+  { id: 'walk', name: 'Laufband (zügig gehen)', met: 4.3 },
+  { id: 'jog', name: 'Laufband (Joggen)', met: 8.0 },
+  { id: 'cross', name: 'Crosstrainer', met: 5.0 },
+  { id: 'bike', name: 'Ergometer / Rad', met: 6.0 },
+  { id: 'row', name: 'Rudergerät', met: 7.0 },
+  { id: 'stair', name: 'Stepper / Treppensteigen', met: 9.0 }
+];
+
+function cardioType(id) {
+  return CARDIO_TYPES.find(function (t) { return t.id === id; }) || null;
+}
+
+function kcalFor(met, kg, minutes) {
+  if (!met || !kg || !minutes || minutes <= 0) return 0;
+  return Math.round(met * kg * (minutes / 60));
+}
+
+function fmtDuration(min) {
+  if (min === null || min === undefined || isNaN(min)) return '–';
+  if (min < 60) return min + ' Min';
+  const h = Math.floor(min / 60);
+  const m = min % 60;
+  return h + ' Std ' + (m > 0 ? m + ' Min' : '');
+}
+
 /* ===== Abschluss-Overlay mit Konfetti ===== */
 
 function showFinishOverlay(stats, results) {
@@ -418,13 +451,25 @@ function showFinishOverlay(stats, results) {
   }).join('');
   if (!lines) lines = '<li><span class="sub">Keine gewerteten Sätze (Gewicht + Wdh. eintragen und abhaken, dann rechnet die App für dich).</span></li>';
 
+  const statGrid =
+    '<div class="finish-stats">' +
+    '<div><span class="fs-num">' + fmtDuration(stats.durationMin) + '</span><span class="fs-lbl">Dauer</span></div>' +
+    '<div><span class="fs-num">' + (stats.volume > 0 ? stats.volume.toLocaleString('de-DE') + ' kg' : '–') + '</span><span class="fs-lbl">gestemmt</span></div>' +
+    '<div><span class="fs-num">' + (stats.kcal > 0 ? '~' + stats.kcal.toLocaleString('de-DE') : '–') + '</span><span class="fs-lbl">kcal (grob)</span></div>' +
+    '<div><span class="fs-num">' + stats.sets + '</span><span class="fs-lbl">' + (stats.sets === 1 ? 'Satz' : 'Sätze') + '</span></div>' +
+    '</div>';
+
+  const cardioLine = stats.cardio
+    ? '<p class="cardio-line">🏃 ' + esc(stats.cardio.name) + ': ' + stats.cardio.minutes + ' Min (~' + stats.cardio.kcal.toLocaleString('de-DE') + ' kcal)</p>'
+    : '';
+
   root.innerHTML =
     '<div class="overlay-backdrop">' +
     '<div class="finish-card">' +
     '<div class="finish-emoji">🎉</div>' +
     '<h2>Training geschafft!</h2>' +
-    '<p class="sub">' + stats.sets + (stats.sets === 1 ? ' Satz' : ' Sätze') +
-    (stats.volume > 0 ? ' · ' + stats.volume.toLocaleString('de-DE') + ' kg bewegt' : '') + '</p>' +
+    statGrid +
+    cardioLine +
     (prs.length ? '<p class="pr-line">🏆 Neuer Rekord: ' + prs.map(function (r) { return esc(r.name); }).join(', ') + '!</p>' : '') +
     '<div class="section-title" style="text-align:left">Plan fürs nächste Mal</div>' +
     '<ul class="result-list">' + lines + '</ul>' +

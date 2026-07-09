@@ -196,6 +196,7 @@ function loadState() {
   if (typeof s.version !== 'number') s.version = 1;
   if (!s.settings || typeof s.settings !== 'object') s.settings = {};
   if (typeof s.settings.autoTimer !== 'boolean') s.settings.autoTimer = true;
+  if (typeof s.settings.bodyWeight !== 'number' || isNaN(s.settings.bodyWeight)) s.settings.bodyWeight = 134;
   ['3x', '5x'].forEach(function (k) {
     s.plans[k].days.forEach(function (d) {
       d.exercises.forEach(function (e) {
@@ -206,6 +207,8 @@ function loadState() {
     });
   });
   if (s.draft && Array.isArray(s.draft.entries)) {
+    if (typeof s.draft.startedAt !== 'number') s.draft.startedAt = Date.now();
+    if (!s.draft.cardio || typeof s.draft.cardio !== 'object') s.draft.cardio = { type: '', minutes: '' };
     s.draft.entries.forEach(function (en) {
       (en.sets || []).forEach(function (st) { st.warmup = !!st.warmup; });
       if (!en.banner || typeof en.banner.text !== 'string') en.banner = { cls: 'hold', text: '🎯 Weiter geht’s: nah ans Limit (1-2 Wdh. Reserve).' };
@@ -602,6 +605,8 @@ function startWorkout(dayId) {
     dayId: dayId,
     dayName: dayTitle(day),
     date: todayISO(),
+    startedAt: Date.now(),
+    cardio: { type: '', minutes: '' },
     entries: entries
   };
   resetTimer();
@@ -711,6 +716,21 @@ function renderWorkout() {
       '</div>';
   });
 
+  /* Cardio zum Abschluss (optional) */
+  const cardio = draft.cardio || { type: '', minutes: '' };
+  const cardioOptions = CARDIO_TYPES.map(function (t) {
+    return '<option value="' + t.id + '"' + (cardio.type === t.id ? ' selected' : '') + '>' + esc(t.name) + '</option>';
+  }).join('');
+  html +=
+    '<div class="card cardio-card">' +
+    '<h3>🏃 Cardio zum Abschluss</h3>' +
+    '<p class="sub">Optional: Nach dem Krafttraining hier eintragen, zählt mit in Kalorien und Dauer.</p>' +
+    '<div class="cardio-row">' +
+    '<select data-cardio-field="type"><option value=""' + (cardio.type === '' ? ' selected' : '') + '>Kein Cardio</option>' + cardioOptions + '</select>' +
+    '<input type="number" min="0" max="180" step="1" inputmode="numeric" placeholder="Min." value="' + esc(cardio.minutes) + '" data-cardio-field="minutes">' +
+    '</div>' +
+    '</div>';
+
   html +=
     '<div class="workout-footer">' +
     '<button class="btn btn-success" data-action="finish-workout">Training abschließen ✓</button>' +
@@ -756,8 +776,37 @@ function finishWorkout() {
       return { name: r.name, verdict: r.verdict, text: r.text, isPR: r.isPR };
     })
   };
+  /* Dauer (Start bis Ende) + grobe Kalorien-Schätzung */
+  const durationMin = draft.startedAt
+    ? Math.max(1, Math.round((Date.now() - draft.startedAt) / 60000))
+    : null;
+  const bw = state.settings.bodyWeight || 134;
+
+  let cardio = null;
+  if (draft.cardio && draft.cardio.type) {
+    const ct = cardioType(draft.cardio.type);
+    const mins = Math.round(num(draft.cardio.minutes));
+    if (ct && !isNaN(mins) && mins > 0) {
+      cardio = { type: ct.id, name: ct.name, minutes: mins, kcal: kcalFor(ct.met, bw, mins) };
+    }
+  }
+
+  let kcalTotal = 0;
+  if (durationMin !== null) {
+    let strengthMin = durationMin - (cardio ? cardio.minutes : 0);
+    strengthMin = Math.min(Math.max(strengthMin, 5), 180); /* gegen Ausreißer (App offen gelassen) */
+    kcalTotal = kcalFor(STRENGTH_MET, bw, strengthMin) + (cardio ? cardio.kcal : 0);
+  }
+
+  log.durationMin = durationMin;
+  log.kcal = kcalTotal;
+  log.cardio = cardio;
+
   state.logs.push(log);
   const stats = logStats(log);
+  stats.durationMin = durationMin;
+  stats.kcal = kcalTotal;
+  stats.cardio = cardio;
 
   state.draft = null;
   resetTimer();
@@ -911,6 +960,10 @@ function renderVerlauf() {
             .join('  ');
           return '<div><b>' + esc(e.name) + ':</b> ' + (setTxt || 'nichts eingetragen') + '</div>';
         }).join('');
+        let cardioLine = '';
+        if (log.cardio) {
+          cardioLine = '<div><b>Cardio:</b> ' + esc(log.cardio.name) + ' · ' + log.cardio.minutes + ' Min (~' + log.cardio.kcal.toLocaleString('de-DE') + ' kcal)</div>';
+        }
         let resLines = '';
         if (Array.isArray(log.results) && log.results.length) {
           resLines = '<div class="res-note" style="margin-top:8px"><b>Empfehlung danach:</b></div>' +
@@ -919,7 +972,7 @@ function renderVerlauf() {
             }).join('');
         }
         details =
-          '<div class="log-details">' + lines + resLines +
+          '<div class="log-details">' + lines + cardioLine + resLines +
           '<div class="log-actions"><button class="btn btn-danger-ghost small" data-action="del-log" data-log="' + log.id + '">Eintrag löschen</button></div>' +
           '</div>';
       }
@@ -927,7 +980,10 @@ function renderVerlauf() {
         '<div class="card log-item" data-action="toggle-log" data-log="' + log.id + '">' +
         '<div class="log-summary">' +
         '<div><h3>' + esc(log.dayName) + '</h3><p class="sub">' + fmtDate(log.date) + '</p></div>' +
-        '<div class="sub" style="text-align:right">' + setsWord(st.sets) + (st.volume > 0 ? '<br>' + st.volume.toLocaleString('de-DE') + ' kg bewegt' : '') + '</div>' +
+        '<div class="sub" style="text-align:right">' + setsWord(st.sets) +
+        (st.volume > 0 ? '<br>' + st.volume.toLocaleString('de-DE') + ' kg bewegt' : '') +
+        (log.durationMin ? '<br>' + fmtDuration(log.durationMin) + (log.kcal > 0 ? ' · ~' + log.kcal.toLocaleString('de-DE') + ' kcal' : '') : '') +
+        '</div>' +
         '</div>' +
         details +
         '</div>';
@@ -961,6 +1017,11 @@ function renderMehr() {
     '<div><h3>Auto-Pause-Timer</h3><p class="sub">Nach jedem abgehakten Satz startet die Pause von allein (Grundübung 2,5 Min, kleine Übung 90 s, Aufwärmsatz 60 s).</p></div>' +
     '<span class="switch' + (state.settings.autoTimer ? ' on' : '') + '"></span>' +
     '</div></div>' +
+    '<div class="card">' +
+    '<div class="switch-row" style="cursor:default">' +
+    '<div><h3>Dein Körpergewicht</h3><p class="sub">Grundlage für die Kalorien-Schätzung. Aktualisiere es ab und zu, wenn du abnimmst.</p></div>' +
+    '<span class="bw-wrap"><input type="number" class="bw-input" min="40" max="300" step="0.5" value="' + state.settings.bodyWeight + '" data-setting-field="bodyWeight"> kg</span>' +
+    '</div></div>' +
     '<div class="section-title">Warum die App so tickt</div>' +
     '<div class="card">' +
     '<p class="sub">Die Empfehlungen kommen nicht aus dem Bauch, sondern aus Studien:</p>' +
@@ -969,6 +1030,7 @@ function renderMehr() {
     '<li><b>Steigern:</b> Sobald du überall die obere Wiederholungszahl schaffst, geht das Gewicht rauf (ACSM-Leitlinie: +2 bis 10%). Genau das rechnet die App nach jedem Training für dich aus.</li>' +
     '<li><b>Aufwärmen:</b> Leichte Aufwärmsätze mit ca. 40% und 80% des Arbeitsgewichts machen die schweren Sätze messbar besser (Studien zu Bankdrücken und Kniebeugen).</li>' +
     '<li><b>Pause:</b> 2-3 Minuten zwischen schweren Sätzen bringen mehr Kraft und Muskeln als 1 Minute (Schoenfeld und Kollegen, 2016).</li>' +
+    '<li><b>Kalorien:</b> grobe Schätzung über MET-Werte aus dem Kompendium körperlicher Aktivitäten (Krafttraining ~3,5 MET, Cardio je nach Gerät), gerechnet mit deinem Körpergewicht. Als Orientierung gedacht, nicht als Messung.</li>' +
     '</ul></div>' +
     '<div class="section-title">Daten</div>' +
     '<div class="card">' +
@@ -1188,6 +1250,20 @@ function init() {
       }
       return;
     }
+    if (t.dataset.cardioField && state.draft) {
+      if (!state.draft.cardio) state.draft.cardio = { type: '', minutes: '' };
+      state.draft.cardio[t.dataset.cardioField] = t.value;
+      saveState();
+      return;
+    }
+    if (t.dataset.settingField === 'bodyWeight') {
+      const v = num(t.value);
+      if (!isNaN(v) && v >= 40 && v <= 300) {
+        state.settings.bodyWeight = v;
+        saveState();
+      }
+      return;
+    }
     if (t.dataset.editField && editingCopy) {
       const f = t.dataset.editField;
       if (f === 'dayname') editingCopy.name = t.value;
@@ -1204,6 +1280,11 @@ function init() {
     const t = e.target;
     if (t.dataset.editField === 'weekday' && editingCopy) {
       editingCopy.weekday = parseInt(t.value, 10);
+    }
+    if (t.dataset.cardioField === 'type' && state.draft) {
+      if (!state.draft.cardio) state.draft.cardio = { type: '', minutes: '' };
+      state.draft.cardio.type = t.value;
+      saveState();
     }
   });
 

@@ -856,6 +856,61 @@ input[type="number"] { -moz-appearance: textfield; appearance: textfield; }
 .swap-item .kg { color: var(--accent); font-size: 0.75rem; }
 .swap-arrow { color: var(--muted); flex-shrink: 0; }
 
+/* ===== Cardio & Abschluss-Statistik ===== */
+.cardio-row { display: flex; gap: 8px; margin-top: 10px; }
+.cardio-row select {
+  flex: 1;
+  min-width: 0;
+  background: var(--card2);
+  border: 1px solid var(--border);
+  border-radius: 10px;
+  color: var(--text);
+  padding: 10px;
+  font-size: 0.9rem;
+}
+.cardio-row input {
+  width: 84px;
+  background: var(--card2);
+  border: 1px solid var(--border);
+  border-radius: 10px;
+  color: var(--text);
+  padding: 10px 8px;
+  font-size: 1rem;
+  text-align: center;
+}
+.cardio-row select:focus, .cardio-row input:focus, .bw-input:focus {
+  outline: none;
+  border-color: var(--accent);
+}
+
+.finish-stats {
+  display: grid;
+  grid-template-columns: 1fr 1fr;
+  gap: 8px;
+  margin: 14px 0 4px;
+}
+.finish-stats > div {
+  background: var(--card2);
+  border: 1px solid var(--border);
+  border-radius: 12px;
+  padding: 10px 6px;
+}
+.fs-num { display: block; font-weight: 800; font-size: 1.05rem; color: var(--accent); }
+.fs-lbl { display: block; font-size: 0.68rem; color: var(--muted); margin-top: 2px; }
+.cardio-line { color: var(--text); font-size: 0.85rem; margin-top: 10px; }
+
+.bw-wrap { display: flex; align-items: center; gap: 6px; color: var(--muted); flex-shrink: 0; }
+.bw-input {
+  width: 74px;
+  background: var(--card2);
+  border: 1px solid var(--border);
+  border-radius: 10px;
+  color: var(--text);
+  padding: 10px 8px;
+  font-size: 1rem;
+  text-align: center;
+}
+
 /* ===== iOS-PWA: Notch/Statusleiste freihalten ===== */
 .app-header { padding-top: calc(14px + env(safe-area-inset-top)); }
 .timer-bar { top: calc(54px + env(safe-area-inset-top)); }
