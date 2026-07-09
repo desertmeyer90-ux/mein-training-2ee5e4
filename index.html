@@ -1,0 +1,54 @@
+<!DOCTYPE html>
+<html lang="de">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+<meta name="theme-color" content="#0c0e13">
+<meta name="apple-mobile-web-app-capable" content="yes">
+<meta name="apple-mobile-web-app-status-bar-style" content="black-translucent">
+<meta name="apple-mobile-web-app-title" content="Mein Training">
+<title>Mein Training</title>
+<link rel="manifest" href="manifest.json">
+<link rel="apple-touch-icon" href="img/apple-touch-icon.png">
+<link rel="icon" type="image/png" sizes="192x192" href="img/icon-192.png">
+<link rel="stylesheet" href="css/style.css">
+</head>
+<body>
+
+<header class="app-header">
+  <div class="brand"><span class="logo">🏋️</span>MEIN&nbsp;<span class="accent">TRAINING</span></div>
+  <div class="header-date" id="header-date"></div>
+</header>
+
+<main id="main">
+  <section id="view-heute" class="view"></section>
+  <section id="view-plan" class="view"></section>
+  <section id="view-verlauf" class="view"></section>
+  <section id="view-mehr" class="view"></section>
+  <section id="view-workout" class="view"></section>
+</main>
+
+<nav class="tabbar" id="tabbar">
+  <button data-view="heute"><span class="ico">🏠</span><span>Heute</span></button>
+  <button data-view="plan"><span class="ico">📋</span><span>Plan</span></button>
+  <button data-view="verlauf"><span class="ico">📈</span><span>Verlauf</span></button>
+  <button data-view="mehr"><span class="ico">⚙️</span><span>Mehr</span></button>
+</nav>
+
+<div id="toast"></div>
+<div id="modal-root"></div>
+<div id="overlay-root"></div>
+<div id="confetti-root"></div>
+<input type="file" id="import-file" accept=".json,application/json" hidden>
+
+<script src="js/coach.js"></script>
+<script src="js/app.js"></script>
+<script>
+if ('serviceWorker' in navigator && location.protocol !== 'file:') {
+  window.addEventListener('load', function () {
+    navigator.serviceWorker.register('sw.js');
+  });
+}
+</script>
+</body>
+</html>

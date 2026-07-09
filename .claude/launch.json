@@ -1,0 +1,11 @@
+{
+  "version": "0.0.1",
+  "configurations": [
+    {
+      "name": "mein-training",
+      "runtimeExecutable": "python",
+      "runtimeArgs": ["-m", "http.server", "4181"],
+      "port": 4181
+    }
+  ]
+}
