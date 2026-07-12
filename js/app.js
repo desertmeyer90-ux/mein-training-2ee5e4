@@ -197,6 +197,7 @@ function loadState() {
   if (!s.settings || typeof s.settings !== 'object') s.settings = {};
   if (typeof s.settings.autoTimer !== 'boolean') s.settings.autoTimer = true;
   if (typeof s.settings.bodyWeight !== 'number' || isNaN(s.settings.bodyWeight)) s.settings.bodyWeight = 134;
+  if (typeof s.settings.onboarded !== 'boolean') s.settings.onboarded = false;
   ['3x', '5x'].forEach(function (k) {
     s.plans[k].days.forEach(function (d) {
       d.exercises.forEach(function (e) {
@@ -246,11 +247,17 @@ function loadState() {
   return s;
 }
 
+let saveWarned = false;
+
 function saveState() {
   try {
     localStorage.setItem(STORAGE_KEY, JSON.stringify(state));
   } catch (e) {
     console.error('Speichern fehlgeschlagen:', e);
+    if (!saveWarned) {
+      saveWarned = true;
+      try { toast('⚠️ Speichern fehlgeschlagen! Speicher voll oder privater Modus?'); } catch (e2) { /* Toast noch nicht bereit */ }
+    }
   }
 }
 
@@ -296,6 +303,48 @@ function distinctLogDates(fromIso, toIso) {
   return Object.keys(dates);
 }
 
+function trainingDaysInWeek(mondayDate) {
+  const sun = new Date(mondayDate);
+  sun.setDate(mondayDate.getDate() + 6);
+  return distinctLogDates(isoOf(mondayDate), isoOf(sun)).length;
+}
+
+/* Wochen-Serie: wie viele Wochen in Folge wurde das Wochenziel erreicht?
+   Die laufende Woche zählt mit, sobald sie erfüllt ist, bricht die Serie
+   aber nicht ab, solange sie noch läuft. */
+function weekStreak() {
+  const target = currentPlan().days.length || 3;
+  const mon = mondayOfCurrentWeek();
+  let streak = 0;
+  let w = trainingDaysInWeek(mon) >= target ? 0 : 1;
+  for (; w < 520; w++) {
+    const m = new Date(mon);
+    m.setDate(mon.getDate() - 7 * w);
+    if (trainingDaysInWeek(m) >= target) streak++;
+    else break;
+  }
+  return streak;
+}
+
+function totalVolume() {
+  let v = 0;
+  state.logs.forEach(function (l) { v += logStats(l).volume; });
+  return v;
+}
+
+function totalPRs() {
+  let n = 0;
+  state.logs.forEach(function (l) {
+    if (Array.isArray(l.results)) l.results.forEach(function (r) { if (r.isPR) n++; });
+  });
+  return n;
+}
+
+function fmtVolume(kg) {
+  if (kg >= 10000) return (Math.round(kg / 100) / 10).toLocaleString('de-DE') + ' t';
+  return kg.toLocaleString('de-DE') + ' kg';
+}
+
 /* ===== Ansichten-Steuerung ===== */
 
 let currentView = 'heute';
@@ -304,6 +353,23 @@ let editingCopy = null;
 let expandedLogId = null;
 let chartExName = null;
 let chartSelIdx = null;
+
+/* Bildschirm während des Trainings anlassen (Wake Lock) */
+let wakeLock = null;
+
+function acquireWakeLock() {
+  if (!('wakeLock' in navigator)) return;
+  navigator.wakeLock.request('screen').then(function (lock) {
+    wakeLock = lock;
+  }).catch(function () { /* nicht unterstützt oder abgelehnt: kein Problem */ });
+}
+
+function releaseWakeLock() {
+  if (wakeLock) {
+    wakeLock.release().catch(function () {});
+    wakeLock = null;
+  }
+}
 
 function showView(name) {
   currentView = name;
@@ -314,6 +380,17 @@ function showView(name) {
     b.classList.toggle('active', b.dataset.view === name);
   });
   document.body.classList.toggle('workout-open', name === 'workout');
+
+  /* Einblend-Animation nur beim Ansichtswechsel, nicht bei jedem Neuzeichnen */
+  const view = document.getElementById('view-' + name);
+  if (view && name !== 'workout') {
+    view.classList.add('anim');
+    setTimeout(function () { view.classList.remove('anim'); }, 700);
+  }
+
+  if (name === 'workout') acquireWakeLock();
+  else releaseWakeLock();
+
   render(name);
   window.scrollTo(0, 0);
 }
@@ -360,10 +437,12 @@ function renderHeute() {
     return state.logs.some(function (l) { return l.date === iso; });
   }).length;
   const pct = Math.min(100, Math.round((doneCount / target) * 100));
+  const streak = weekStreak();
   const progress =
     '<div class="progress-wrap">' +
     '<div class="progress-label"><span>Diese Woche</span><span>' + doneCount + ' von ' + target + ' Trainings</span></div>' +
     '<div class="progress-bar"><div class="progress-fill' + (doneCount >= target ? ' full' : '') + '" style="width:' + pct + '%"></div></div>' +
+    (streak > 0 ? '<p class="streak-line">🔥 Serie: ' + streak + (streak === 1 ? ' Woche' : ' Wochen') + ' in Folge das Wochenziel erreicht</p>' : '') +
     '</div>';
 
   /* Hauptkarte */
@@ -663,18 +742,34 @@ function renderWorkout() {
     return;
   }
 
+  /* Satz-Fortschritt (nur Arbeitssätze) */
+  let workTotal = 0;
+  let workDone = 0;
+  draft.entries.forEach(function (e) {
+    e.sets.forEach(function (s) {
+      if (s.warmup) return;
+      workTotal++;
+      if (s.done) workDone++;
+    });
+  });
+  const workPct = workTotal > 0 ? Math.round((workDone / workTotal) * 100) : 0;
+
   let html =
     '<div class="workout-head">' +
-    '<div><span class="badge">' + fmtDate(draft.date) + '</span><h2 style="margin-top:6px">' + esc(draft.dayName) + '</h2></div>' +
-    '<button class="close-btn" data-action="cancel-workout" title="Training abbrechen">✕</button>' +
+    '<div class="workout-head-text"><span class="badge">' + fmtDate(draft.date) + '</span><h2 style="margin-top:6px">' + esc(draft.dayName) + '</h2>' +
+    '<div class="wo-progress" role="progressbar" aria-valuemin="0" aria-valuemax="' + workTotal + '" aria-valuenow="' + workDone + '">' +
+    '<div class="wo-fill' + (workDone >= workTotal && workTotal > 0 ? ' full' : '') + '" style="width:' + workPct + '%"></div></div>' +
+    '<span class="wo-txt">' + workDone + ' von ' + workTotal + ' Sätzen</span></div>' +
+    '<button class="close-btn" data-action="cancel-workout" title="Training abbrechen" aria-label="Training abbrechen">✕</button>' +
     '</div>';
 
   html +=
     '<div class="timer-bar">' +
-    '<span class="timer-display" id="timer-display">Pause-Timer bereit</span>' +
-    '<button class="chip" data-action="timer" data-sec="60">60 s</button>' +
-    '<button class="chip" data-action="timer" data-sec="90">90 s</button>' +
-    '<button class="chip" data-action="timer" data-sec="120">120 s</button>' +
+    '<button class="timer-display" id="timer-display" data-action="timer-stop" title="Antippen stoppt den Timer" aria-label="Pause-Timer stoppen">Pause-Timer bereit</button>' +
+    '<button class="chip" data-action="timer" data-sec="60" aria-label="60 Sekunden Pause starten">60 s</button>' +
+    '<button class="chip" data-action="timer" data-sec="90" aria-label="90 Sekunden Pause starten">90 s</button>' +
+    '<button class="chip" data-action="timer" data-sec="120" aria-label="120 Sekunden Pause starten">120 s</button>' +
+    '<div class="timer-fill" id="timer-progress"></div>' +
     '</div>';
 
   draft.entries.forEach(function (entry, ei) {
@@ -688,7 +783,7 @@ function renderWorkout() {
         '<input type="number" step="0.5" min="0" inputmode="decimal" placeholder="kg" value="' + esc(set.weight) + '" data-field="weight" data-ex="' + ei + '" data-set="' + si + '">' +
         '<span class="x">×</span>' +
         '<input type="number" step="1" min="0" inputmode="numeric" placeholder="Wdh." value="' + esc(set.reps) + '" data-field="reps" data-ex="' + ei + '" data-set="' + si + '">' +
-        '<button class="set-done" data-action="toggle-set" data-ex="' + ei + '" data-set="' + si + '">✓</button>' +
+        '<button class="set-done" data-action="toggle-set" data-ex="' + ei + '" data-set="' + si + '" aria-label="' + (set.warmup ? 'Aufwärmsatz' : 'Satz') + ' abhaken">✓</button>' +
         '</div>';
     });
 
@@ -808,6 +903,18 @@ function finishWorkout() {
   stats.kcal = kcalTotal;
   stats.cardio = cardio;
 
+  /* Wochenziel und Meilensteine für die Feier im Overlay */
+  const target = currentPlan().days.length || 3;
+  stats.weekGoal = trainingDaysInWeek(mondayOfCurrentWeek()) === target
+    ? '🎯 Wochenziel geschafft: ' + target + ' von ' + target + ' Trainings!'
+    : null;
+  const MILESTONES = [1, 5, 10, 25, 50, 75, 100, 150, 200, 365];
+  stats.milestone = MILESTONES.indexOf(state.logs.length) !== -1
+    ? (state.logs.length === 1
+      ? '🏅 Dein 1. Training ist im Kasten: der Anfang ist gemacht!'
+      : '🏅 Meilenstein: dein ' + state.logs.length + '. Training!')
+    : null;
+
   state.draft = null;
   resetTimer();
   saveState();
@@ -828,12 +935,14 @@ function cancelWorkout() {
 
 let timerInterval = null;
 let timerLeft = 0;
+let timerTotal = 0;
 let timerFinished = false;
 
 function startTimer(sec) {
   stopTimer();
   timerFinished = false;
   timerLeft = sec;
+  timerTotal = sec;
   updateTimerUI();
   timerInterval = setInterval(function () {
     timerLeft--;
@@ -854,11 +963,16 @@ function stopTimer() {
 function resetTimer() {
   stopTimer();
   timerLeft = 0;
+  timerTotal = 0;
   timerFinished = false;
 }
 
 function updateTimerUI() {
   const el = document.getElementById('timer-display');
+  const fill = document.getElementById('timer-progress');
+  if (fill) {
+    fill.style.width = (timerTotal > 0 && timerLeft > 0) ? Math.round((timerLeft / timerTotal) * 100) + '%' : '0%';
+  }
   if (!el) return;
   if (timerLeft > 0) {
     el.textContent = 'Pause: noch ' + timerLeft + ' s';
@@ -900,12 +1014,19 @@ function renderVerlauf() {
   const monthPrefix = todayIso.slice(0, 7);
   const monthCount = state.logs.filter(function (l) { return l.date.slice(0, 7) === monthPrefix; }).length;
 
+  const streak = weekStreak();
+  const volume = totalVolume();
+  const prs = totalPRs();
+
   let html =
     '<div class="section-title">Deine Bilanz</div>' +
     '<div class="stat-grid">' +
     '<div class="stat"><div class="num" data-count="' + state.logs.length + '">0</div><div class="lbl">Trainings gesamt</div></div>' +
     '<div class="stat"><div class="num">' + weekCount + '/' + currentPlan().days.length + '</div><div class="lbl">Diese Woche</div></div>' +
     '<div class="stat"><div class="num" data-count="' + monthCount + '">0</div><div class="lbl">Diesen Monat</div></div>' +
+    '<div class="stat"><div class="num">' + (streak > 0 ? '🔥 ' + streak : '–') + '</div><div class="lbl">' + (streak === 1 ? 'Woche Serie' : 'Wochen Serie') + '</div></div>' +
+    '<div class="stat"><div class="num">' + (volume > 0 ? fmtVolume(volume) : '–') + '</div><div class="lbl">Gesamt gestemmt</div></div>' +
+    '<div class="stat"><div class="num" data-count="' + prs + '">' + (prs > 0 ? '0' : '–') + '</div><div class="lbl">Rekorde</div></div>' +
     '</div>';
 
   /* Fortschritts-Chart pro Übung */
@@ -1016,7 +1137,9 @@ function renderMehr() {
     '<div class="switch-row" data-action="toggle-autotimer">' +
     '<div><h3>Auto-Pause-Timer</h3><p class="sub">Nach jedem abgehakten Satz startet die Pause von allein (Grundübung 2,5 Min, kleine Übung 90 s, Aufwärmsatz 60 s).</p></div>' +
     '<span class="switch' + (state.settings.autoTimer ? ' on' : '') + '"></span>' +
-    '</div></div>' +
+    '</div>' +
+    '<p class="sub" style="margin-top:10px">📱 Während eines Trainings bleibt der Bildschirm automatisch an (wenn dein Handy das unterstützt).</p>' +
+    '</div>' +
     '<div class="card">' +
     '<div class="switch-row" style="cursor:default">' +
     '<div><h3>Dein Körpergewicht</h3><p class="sub">Grundlage für die Kalorien-Schätzung. Aktualisiere es ab und zu, wenn du abnimmst.</p></div>' +
@@ -1044,7 +1167,12 @@ function renderMehr() {
     '<button class="btn btn-ghost" data-action="reset-plan">Pläne auf Standard zurücksetzen</button>' +
     '<button class="btn btn-danger-ghost" data-action="wipe-all" style="margin-top:10px">Alle Daten löschen</button>' +
     '</div>' +
-    '<p class="sub" style="text-align:center;margin-top:14px">Mein Training v2.0 · für Dennis 💪<br>Übungsfotos: free-exercise-db (Public Domain)</p>';
+    '<div class="section-title">Datenschutz & Hinweis</div>' +
+    '<div class="card">' +
+    '<p class="sub">🔒 Alle Daten bleiben nur auf deinem Gerät: kein Konto, keine Cloud, kein Tracking. Sichern kannst du sie über das Backup weiter oben.</p>' +
+    '<p class="sub" style="margin-top:8px">⚕️ Trainings- und Kalorienangaben sind Orientierungshilfen, keine medizinische Beratung. Bei Schmerzen oder gesundheitlichen Problemen: Training abbrechen und ärztlich abklären lassen.</p>' +
+    '</div>' +
+    '<p class="sub" style="text-align:center;margin-top:14px">Mein Training v6 · für Dennis 💪<br>Übungsfotos: free-exercise-db (Public Domain)</p>';
 }
 
 function setMode(mode) {
@@ -1114,6 +1242,54 @@ function wipeAll() {
   location.reload();
 }
 
+/* ===== Onboarding (Erststart) ===== */
+
+let obStep = 0;
+
+const OB_STEPS = [
+  {
+    emoji: '💪',
+    title: 'Willkommen bei Mein Training',
+    text: 'Dein Plan, deine Gewichte, dein Fortschritt: alles in einer App. Deine Daten bleiben komplett auf diesem Gerät, kein Konto nötig.'
+  },
+  {
+    emoji: '🧠',
+    title: 'Die App denkt mit',
+    text: 'Aufwärmsätze werden automatisch berechnet, und nach jedem Training sagt dir die App, ob du das Gewicht steigern sollst. Übung antippen zeigt die Ausführung mit Bild, mit ⇄ tauschst du sie gegen eine ähnliche.'
+  },
+  {
+    emoji: '🚀',
+    title: 'Bereit fürs Training?',
+    text: 'Im Training bleibt der Bildschirm an und der Pausen-Timer startet nach jedem Satz von allein. Wichtig: Die App ersetzt keinen Arzt. Bei Schmerzen Übung abbrechen und abklären lassen.'
+  }
+];
+
+function renderOnboarding() {
+  const root = document.getElementById('overlay-root');
+  const s = OB_STEPS[obStep];
+  const dots = OB_STEPS.map(function (_, i) {
+    return '<span class="ob-dot' + (i === obStep ? ' on' : '') + '"></span>';
+  }).join('');
+  const last = obStep === OB_STEPS.length - 1;
+  root.innerHTML =
+    '<div class="overlay-backdrop">' +
+    '<div class="finish-card ob-card">' +
+    '<div class="finish-emoji">' + s.emoji + '</div>' +
+    '<h2>' + s.title + '</h2>' +
+    '<p class="sub" style="margin-top:10px">' + s.text + '</p>' +
+    '<div class="ob-dots">' + dots + '</div>' +
+    '<button class="btn btn-primary" data-action="' + (last ? 'ob-done' : 'ob-next') + '">' + (last ? 'Los geht’s 💪' : 'Weiter') + '</button>' +
+    (!last ? '<button class="btn btn-ghost" data-action="ob-done" style="margin-top:10px">Überspringen</button>' : '') +
+    '</div></div>';
+  root.classList.add('open');
+}
+
+function finishOnboarding() {
+  state.settings.onboarded = true;
+  saveState();
+  closeOverlay();
+}
+
 /* ===== Toast ===== */
 
 let toastTimeout = null;
@@ -1142,6 +1318,7 @@ function handleAction(action, el) {
       if (!set) break;
       set.done = !set.done;
       if (set.done && state.settings.autoTimer) startTimer(set.warmup ? 60 : (entry.rest || 90));
+      if (set.done && navigator.vibrate && !prefersReducedMotion()) navigator.vibrate(15);
       saveState();
       renderWorkout();
       break;
@@ -1204,6 +1381,9 @@ function handleAction(action, el) {
     case 'close-modal': closeModal(); break;
     case 'noop': break;
     case 'finish-close': closeOverlay(); break;
+    case 'ob-next': obStep++; renderOnboarding(); break;
+    case 'ob-done': finishOnboarding(); break;
+    case 'timer-stop': resetTimer(); updateTimerUI(); break;
     case 'chart-ex': chartExName = el.dataset.name; chartSelIdx = null; renderVerlauf(); break;
     case 'chart-dot': chartSelIdx = parseInt(el.dataset.i, 10); renderVerlauf(); break;
     case 'toggle-autotimer':
@@ -1295,7 +1475,17 @@ function init() {
     e.target.value = '';
   });
 
+  /* Wake Lock nach App-Wechsel wiederherstellen */
+  document.addEventListener('visibilitychange', function () {
+    if (document.visibilityState === 'visible' && currentView === 'workout') acquireWakeLock();
+  });
+
   showView('heute');
+
+  if (!state.settings.onboarded) {
+    obStep = 0;
+    renderOnboarding();
+  }
 }
 
 init();

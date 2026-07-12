@@ -377,10 +377,18 @@ function exImagesHtml(name, cls) {
   const i = exInfo(name);
   if (!i || !i.img) return '';
   const base = IMG_BASE + encodeURIComponent(i.img) + '/';
+  /* Kleine Vorschauen laden die leichten Thumbnail-Dateien */
+  const small = cls.indexOf('ex-thumb') !== -1;
+  const f0 = small ? 't0.jpg' : '0.jpg';
+  const f1 = small ? 't1.jpg' : '1.jpg';
   return '<div class="ex-anim ' + cls + '">' +
-    '<img src="' + base + '0.jpg" alt="" loading="lazy">' +
-    '<img class="frame2" src="' + base + '1.jpg" alt="" loading="lazy">' +
+    '<img src="' + base + f0 + '" alt="" loading="lazy">' +
+    '<img class="frame2" src="' + base + f1 + '" alt="" loading="lazy">' +
     '</div>';
+}
+
+function prefersReducedMotion() {
+  return window.matchMedia && window.matchMedia('(prefers-reduced-motion: reduce)').matches;
 }
 
 /* ===== Übungs-Info-Modal (Ausführung) ===== */
@@ -463,6 +471,9 @@ function showFinishOverlay(stats, results) {
     ? '<p class="cardio-line">🏃 ' + esc(stats.cardio.name) + ': ' + stats.cardio.minutes + ' Min (~' + stats.cardio.kcal.toLocaleString('de-DE') + ' kcal)</p>'
     : '';
 
+  const goalLine = stats.weekGoal ? '<p class="goal-line">' + esc(stats.weekGoal) + '</p>' : '';
+  const milestoneLine = stats.milestone ? '<p class="goal-line">' + esc(stats.milestone) + '</p>' : '';
+
   root.innerHTML =
     '<div class="overlay-backdrop">' +
     '<div class="finish-card">' +
@@ -470,6 +481,8 @@ function showFinishOverlay(stats, results) {
     '<h2>Training geschafft!</h2>' +
     statGrid +
     cardioLine +
+    goalLine +
+    milestoneLine +
     (prs.length ? '<p class="pr-line">🏆 Neuer Rekord: ' + prs.map(function (r) { return esc(r.name); }).join(', ') + '!</p>' : '') +
     '<div class="section-title" style="text-align:left">Plan fürs nächste Mal</div>' +
     '<ul class="result-list">' + lines + '</ul>' +
@@ -487,7 +500,7 @@ function closeOverlay() {
 
 function spawnConfetti() {
   const root = document.getElementById('confetti-root');
-  if (!root) return;
+  if (!root || prefersReducedMotion()) return;
   const colors = ['#ff8a2e', '#ffb26e', '#3ddc84', '#eef1f7', '#ff5566'];
   let html = '';
   for (let i = 0; i < 40; i++) {
@@ -508,6 +521,7 @@ function spawnConfetti() {
 function animateCount(el) {
   const target = parseInt(el.dataset.count, 10);
   if (isNaN(target) || target <= 0) return;
+  if (prefersReducedMotion()) { el.textContent = target; return; }
   const dur = 500;
   const start = performance.now();
   function tick(now) {

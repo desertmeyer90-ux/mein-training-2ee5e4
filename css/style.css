@@ -292,8 +292,8 @@ button { font-family: inherit; }
   border: 1px solid var(--border);
   border-radius: 10px;
   color: var(--text);
-  padding: 9px 10px;
-  font-size: 0.88rem;
+  padding: 9px 6px;
+  font-size: 16px; /* unter 16px zoomt iOS beim Antippen ungewollt rein */
 }
 
 .edit-row input:focus, .edit-head input:focus, .edit-head select:focus,
@@ -358,6 +358,7 @@ button { font-family: inherit; }
   border-radius: 14px;
   padding: 10px 12px;
   margin-bottom: 14px;
+  overflow: hidden;
 }
 
 .timer-bar .timer-display {
@@ -365,6 +366,23 @@ button { font-family: inherit; }
   font-weight: 700;
   font-size: 0.95rem;
   color: var(--success);
+  background: none;
+  border: none;
+  text-align: left;
+  padding: 0;
+  cursor: pointer;
+  font-family: inherit;
+}
+
+.timer-fill {
+  position: absolute;
+  left: 0;
+  bottom: 0;
+  height: 3px;
+  width: 0%;
+  background: linear-gradient(90deg, var(--accent), #ffb26e);
+  transition: width 1s linear;
+  pointer-events: none;
 }
 
 .timer-bar .timer-display.running { color: var(--accent); }
@@ -398,7 +416,7 @@ button { font-family: inherit; }
 
 .set-row {
   display: grid;
-  grid-template-columns: 26px 1fr 16px 1fr 44px;
+  grid-template-columns: 26px 1fr 16px 1fr 48px;
   gap: 8px;
   align-items: center;
   margin-bottom: 8px;
@@ -427,12 +445,12 @@ button { font-family: inherit; }
 .set-row input::placeholder { color: #565e70; font-size: 0.85rem; }
 
 .set-done {
-  height: 40px;
+  height: 46px; /* großes Touch-Ziel fürs Gym */
   border-radius: 10px;
   border: 1px solid var(--border);
   background: var(--card2);
   color: #565e70;
-  font-size: 1rem;
+  font-size: 1.05rem;
   font-weight: 800;
   cursor: pointer;
 }
@@ -783,15 +801,16 @@ input[type="number"] { -moz-appearance: textfield; appearance: textfield; }
 .res-note { color: var(--muted); }
 
 /* ===== Mikro-Animationen ===== */
-#view-heute.active > *, #view-plan.active > *,
-#view-verlauf.active > *, #view-mehr.active > * {
+/* Nur beim Ansichtswechsel animieren (Klasse .anim wird kurz gesetzt),
+   nicht bei jedem Neuzeichnen innerhalb der Ansicht */
+.view.anim > * {
   animation: fadeUp 0.35s ease backwards;
 }
-.view.active > *:nth-child(2) { animation-delay: 0.05s; }
-.view.active > *:nth-child(3) { animation-delay: 0.1s; }
-.view.active > *:nth-child(4) { animation-delay: 0.15s; }
-.view.active > *:nth-child(5) { animation-delay: 0.2s; }
-.view.active > *:nth-child(n+6) { animation-delay: 0.25s; }
+.view.anim > *:nth-child(2) { animation-delay: 0.05s; }
+.view.anim > *:nth-child(3) { animation-delay: 0.1s; }
+.view.anim > *:nth-child(4) { animation-delay: 0.15s; }
+.view.anim > *:nth-child(5) { animation-delay: 0.2s; }
+.view.anim > *:nth-child(n+6) { animation-delay: 0.25s; }
 @keyframes fadeUp {
   from { opacity: 0; transform: translateY(10px); }
   to { opacity: 1; transform: none; }
@@ -822,10 +841,10 @@ input[type="number"] { -moz-appearance: textfield; appearance: textfield; }
   background: var(--card2);
   border: 1px solid var(--border);
   color: var(--muted);
-  border-radius: 8px;
-  width: 30px;
-  height: 30px;
-  font-size: 0.95rem;
+  border-radius: 9px;
+  width: 36px;
+  height: 36px;
+  font-size: 1rem;
   line-height: 1;
   cursor: pointer;
   flex-shrink: 0;
@@ -865,8 +884,8 @@ input[type="number"] { -moz-appearance: textfield; appearance: textfield; }
   border: 1px solid var(--border);
   border-radius: 10px;
   color: var(--text);
-  padding: 10px;
-  font-size: 0.9rem;
+  padding: 10px 8px;
+  font-size: 16px; /* iOS-Zoom vermeiden */
 }
 .cardio-row input {
   width: 84px;
@@ -909,6 +928,72 @@ input[type="number"] { -moz-appearance: textfield; appearance: textfield; }
   padding: 10px 8px;
   font-size: 1rem;
   text-align: center;
+}
+
+/* ===== Workout-Fortschritt im Kopfbereich ===== */
+.workout-head-text { flex: 1; min-width: 0; }
+.wo-progress {
+  margin-top: 10px;
+  height: 6px;
+  border-radius: 999px;
+  background: var(--card2);
+  overflow: hidden;
+}
+.wo-fill {
+  height: 100%;
+  border-radius: 999px;
+  background: linear-gradient(90deg, #ff8a2e, #ffb26e);
+  transition: width 0.4s ease;
+}
+.wo-fill.full { background: linear-gradient(90deg, #3ddc84, #7af0b1); }
+.wo-txt { display: block; font-size: 0.72rem; color: var(--muted); margin-top: 5px; }
+
+/* ===== Serie & Ziel-Feiern ===== */
+.streak-line {
+  color: var(--accent);
+  font-size: 0.78rem;
+  font-weight: 600;
+  margin-top: 8px;
+}
+.goal-line {
+  color: var(--success);
+  font-size: 0.9rem;
+  font-weight: 700;
+  margin-top: 8px;
+}
+
+/* ===== Onboarding ===== */
+.ob-card { max-width: 400px; }
+.ob-dots { display: flex; justify-content: center; gap: 7px; margin: 16px 0 18px; }
+.ob-dot {
+  width: 8px;
+  height: 8px;
+  border-radius: 50%;
+  background: var(--card2);
+  border: 1px solid var(--border);
+  transition: background 0.2s;
+}
+.ob-dot.on { background: var(--accent); border-color: var(--accent); }
+
+/* ===== Barrierefreiheit ===== */
+button:focus-visible,
+input:focus-visible,
+select:focus-visible,
+[data-action]:focus-visible {
+  outline: 2px solid var(--accent);
+  outline-offset: 2px;
+}
+
+@media (prefers-reduced-motion: reduce) {
+  *, *::before, *::after {
+    animation-duration: 0.01ms !important;
+    animation-iteration-count: 1 !important;
+    transition-duration: 0.01ms !important;
+  }
+  .ex-anim img.frame2 { animation: none !important; opacity: 0 !important; }
+  .btn-primary.pulse { animation: none !important; }
+  .progress-fill::after { animation: none !important; }
+  .timer-fill { transition: none !important; }
 }
 
 /* ===== iOS-PWA: Notch/Statusleiste freihalten ===== */
