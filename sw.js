@@ -7,7 +7,7 @@
      bei Offline aus dem Cache.
    - Fotos: direkt aus dem Cache (ändern sich nie). */
 
-const CACHE = 'mein-training-v6';
+const CACHE = 'mein-training-v7';
 
 const CORE = [
   '.',

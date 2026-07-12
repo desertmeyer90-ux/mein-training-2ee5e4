@@ -196,7 +196,7 @@ function loadState() {
   if (typeof s.version !== 'number') s.version = 1;
   if (!s.settings || typeof s.settings !== 'object') s.settings = {};
   if (typeof s.settings.autoTimer !== 'boolean') s.settings.autoTimer = true;
-  if (typeof s.settings.bodyWeight !== 'number' || isNaN(s.settings.bodyWeight)) s.settings.bodyWeight = 134;
+  if (typeof s.settings.bodyWeight !== 'number' || isNaN(s.settings.bodyWeight)) s.settings.bodyWeight = 80;
   if (typeof s.settings.onboarded !== 'boolean') s.settings.onboarded = false;
   ['3x', '5x'].forEach(function (k) {
     s.plans[k].days.forEach(function (d) {
@@ -243,8 +243,68 @@ function loadState() {
     addEx('5x', 'P5', 'Hip Thrust (Langhantel)', 3, '10-12');
     addEx('5x', 'P5', 'Abduktoren-Maschine', 2, '12-15');
   }
-  s.version = 3;
+
+  /* Migration v7 (12.07.2026): Produkt-Verallgemeinerung.
+     Bestehende Nutzer behalten ihr Verhalten: Wochenziel wird aus dem
+     vorhandenen Plan abgeleitet, nichts wird überschrieben. */
+  if (typeof s.settings.weeklyTarget !== 'number' || s.settings.weeklyTarget < 1) {
+    s.settings.weeklyTarget = Math.min(6, Math.max(2, s.plans[s.mode].days.length));
+  }
+  if (!Array.isArray(s.settings.pausedWeeks)) s.settings.pausedWeeks = [];
+  if (typeof s.settings.showStreak !== 'boolean') s.settings.showStreak = true;
+  if (typeof s.settings.goal !== 'string') s.settings.goal = 'fitness';
+  if (typeof s.settings.experience !== 'string') s.settings.experience = 'wiedereinstieg';
+  if (typeof s.settings.location !== 'string') s.settings.location = 'gym';
+
+  s.version = 7;
   return s;
+}
+
+/* Heim-Preset: Ganzkörper-Split nur mit Kurzhanteln und Körpergewicht */
+function homePlanDays() {
+  const days = [
+    {
+      id: 'A', short: 'Tag A', name: 'Brust & Druck', weekday: 0,
+      exercises: [
+        ex('Bankdrücken (Kurzhanteln)', 3, '8-10'),
+        ex('Fliegende (Kurzhanteln)', 2, '12-15'),
+        ex('Schulterdrücken (Kurzhanteln)', 3, '8-10'),
+        ex('Seitheben', 3, '12-15'),
+        ex('Liegestütze', 3, '8-15')
+      ]
+    },
+    {
+      id: 'B', short: 'Tag B', name: 'Rücken & Zug', weekday: 2,
+      exercises: [
+        ex('Einarmiges Kurzhantel-Rudern', 3, '10-12'),
+        ex('Vorgebeugtes Seitheben (Kurzhanteln)', 3, '12-15'),
+        ex('Bizeps-Curls (Kurzhanteln)', 3, '10-12'),
+        ex('Hammer-Curls', 3, '10-12')
+      ]
+    },
+    {
+      id: 'C', short: 'Tag C', name: 'Beine, Po & Core', weekday: 4,
+      exercises: [
+        ex('Goblet Squats', 3, '10-12'),
+        ex('Ausfallschritte', 3, '10-12'),
+        ex('Glute Bridge', 3, '12-15'),
+        ex('Wadenheben', 3, '15-20'),
+        ex('Crunches', 3, '12-20')
+      ]
+    }
+  ];
+  days.forEach(function (d) {
+    d.exercises.forEach(function (e) {
+      e.workWeight = null;
+      e.failStreak = 0;
+      e.lastResult = '';
+    });
+  });
+  return days;
+}
+
+function getWeeklyTarget() {
+  return state.settings.weeklyTarget || currentPlan().days.length || 3;
 }
 
 let saveWarned = false;
@@ -313,13 +373,15 @@ function trainingDaysInWeek(mondayDate) {
    Die laufende Woche zählt mit, sobald sie erfüllt ist, bricht die Serie
    aber nicht ab, solange sie noch läuft. */
 function weekStreak() {
-  const target = currentPlan().days.length || 3;
+  const target = getWeeklyTarget();
+  const paused = state.settings.pausedWeeks || [];
   const mon = mondayOfCurrentWeek();
   let streak = 0;
-  let w = trainingDaysInWeek(mon) >= target ? 0 : 1;
-  for (; w < 520; w++) {
+  if (paused.indexOf(isoOf(mon)) === -1 && trainingDaysInWeek(mon) >= target) streak++;
+  for (let w = 1; w < 520; w++) {
     const m = new Date(mon);
     m.setDate(mon.getDate() - 7 * w);
+    if (paused.indexOf(isoOf(m)) !== -1) continue; /* Pausenwoche zählt neutral */
     if (trainingDaysInWeek(m) >= target) streak++;
     else break;
   }
@@ -432,17 +494,19 @@ function renderHeute() {
   strip += '</div>';
 
   /* Wochenfortschritt */
-  const target = plan.days.length;
+  const target = getWeeklyTarget();
   const doneCount = weekIsos.filter(function (iso) {
     return state.logs.some(function (l) { return l.date === iso; });
   }).length;
   const pct = Math.min(100, Math.round((doneCount / target) * 100));
   const streak = weekStreak();
+  const isPausedWeek = (state.settings.pausedWeeks || []).indexOf(isoOf(monday)) !== -1;
   const progress =
     '<div class="progress-wrap">' +
     '<div class="progress-label"><span>Diese Woche</span><span>' + doneCount + ' von ' + target + ' Trainings</span></div>' +
     '<div class="progress-bar"><div class="progress-fill' + (doneCount >= target ? ' full' : '') + '" style="width:' + pct + '%"></div></div>' +
-    (streak > 0 ? '<p class="streak-line">🔥 Serie: ' + streak + (streak === 1 ? ' Woche' : ' Wochen') + ' in Folge das Wochenziel erreicht</p>' : '') +
+    (isPausedWeek ? '<p class="streak-line">⏸ Diese Woche ist als Pause markiert: deine Serie bleibt erhalten.</p>' : '') +
+    (state.settings.showStreak && streak > 0 && !isPausedWeek ? '<p class="streak-line">🔥 Serie: ' + streak + (streak === 1 ? ' Woche' : ' Wochen') + ' in Folge das Wochenziel erreicht</p>' : '') +
     '</div>';
 
   /* Hauptkarte */
@@ -904,7 +968,7 @@ function finishWorkout() {
   stats.cardio = cardio;
 
   /* Wochenziel und Meilensteine für die Feier im Overlay */
-  const target = currentPlan().days.length || 3;
+  const target = getWeeklyTarget();
   stats.weekGoal = trainingDaysInWeek(mondayOfCurrentWeek()) === target
     ? '🎯 Wochenziel geschafft: ' + target + ' von ' + target + ' Trainings!'
     : null;
@@ -1022,9 +1086,9 @@ function renderVerlauf() {
     '<div class="section-title">Deine Bilanz</div>' +
     '<div class="stat-grid">' +
     '<div class="stat"><div class="num" data-count="' + state.logs.length + '">0</div><div class="lbl">Trainings gesamt</div></div>' +
-    '<div class="stat"><div class="num">' + weekCount + '/' + currentPlan().days.length + '</div><div class="lbl">Diese Woche</div></div>' +
+    '<div class="stat"><div class="num">' + weekCount + '/' + getWeeklyTarget() + '</div><div class="lbl">Diese Woche</div></div>' +
     '<div class="stat"><div class="num" data-count="' + monthCount + '">0</div><div class="lbl">Diesen Monat</div></div>' +
-    '<div class="stat"><div class="num">' + (streak > 0 ? '🔥 ' + streak : '–') + '</div><div class="lbl">' + (streak === 1 ? 'Woche Serie' : 'Wochen Serie') + '</div></div>' +
+    (state.settings.showStreak ? '<div class="stat"><div class="num">' + (streak > 0 ? '🔥 ' + streak : '–') + '</div><div class="lbl">' + (streak === 1 ? 'Woche Serie' : 'Wochen Serie') + '</div></div>' : '<div class="stat"><div class="num">' + state.logs.filter(function (l) { return l.date.slice(0, 4) === todayIso.slice(0, 4); }).length + '</div><div class="lbl">Dieses Jahr</div></div>') +
     '<div class="stat"><div class="num">' + (volume > 0 ? fmtVolume(volume) : '–') + '</div><div class="lbl">Gesamt gestemmt</div></div>' +
     '<div class="stat"><div class="num" data-count="' + prs + '">' + (prs > 0 ? '0' : '–') + '</div><div class="lbl">Rekorde</div></div>' +
     '</div>';
@@ -1129,8 +1193,8 @@ function renderMehr() {
 
   view.innerHTML =
     '<div class="section-title">Trainings-Modus</div>' +
-    modeCard('3x', '3× pro Woche', 'Ganzkörper-Split: Tag A (Brust & Druck), Tag B (Rücken & Zug), Tag C (Beine & Core). Standard: Mo / Mi / Fr. Perfekt für den Einstieg.') +
-    modeCard('5x', '5× pro Woche', 'Push / Pull / Beine / Oberkörper / Unterkörper. Standard: Mo bis Fr. Für später, wenn 3× locker läuft.') +
+    modeCard('3x', 'Ganzkörper-Split (3 Tage)', 'Tag A (Brust & Druck), Tag B (Rücken & Zug), Tag C (Beine & Core). Ideal für Einstieg und Wiedereinstieg. Wochentage stellst du im Plan-Editor ein.') +
+    modeCard('5x', '5er-Split (5 Tage)', 'Push / Pull / Beine / Oberkörper / Unterkörper. Für später, wenn der Ganzkörper-Plan locker läuft.') +
     '<p class="sub" style="margin:0 4px 6px">Beide Pläne bleiben gespeichert, dein Verlauf geht beim Umschalten nicht verloren.</p>' +
     '<div class="section-title">Training</div>' +
     '<div class="card">' +
@@ -1145,6 +1209,28 @@ function renderMehr() {
     '<div><h3>Dein Körpergewicht</h3><p class="sub">Grundlage für die Kalorien-Schätzung. Aktualisiere es ab und zu, wenn du abnimmst.</p></div>' +
     '<span class="bw-wrap"><input type="number" class="bw-input" min="40" max="300" step="0.5" value="' + state.settings.bodyWeight + '" data-setting-field="bodyWeight"> kg</span>' +
     '</div></div>' +
+    '<div class="card">' +
+    '<h3>Wochenziel</h3>' +
+    '<p class="sub">Wie viele Trainings pro Woche zählen für dich als „geschafft"? Zählt für Fortschritt und Serie.</p>' +
+    '<div class="chip-row" style="margin-top:10px">' + [2, 3, 4, 5, 6].map(function (n) {
+      return '<button class="chip' + (getWeeklyTarget() === n ? ' active' : '') + '" data-action="set-target" data-v="' + n + '">' + n + '×</button>';
+    }).join('') + '</div>' +
+    '</div>' +
+    '<div class="card">' +
+    '<div class="switch-row" data-action="toggle-streak">' +
+    '<div><h3>Wochen-Serie anzeigen</h3><p class="sub">Motiviert dich die 🔥-Serie nicht? Dann blende sie einfach aus.</p></div>' +
+    '<span class="switch' + (state.settings.showStreak ? ' on' : '') + '"></span>' +
+    '</div>' +
+    '<button class="btn btn-ghost" data-action="toggle-pause" style="margin-top:12px">' +
+    ((state.settings.pausedWeeks || []).indexOf(isoOf(mondayOfCurrentWeek())) !== -1 ? '⏸ Pause für diese Woche aufheben' : '⏸ Diese Woche pausieren (Urlaub / krank)') +
+    '</button>' +
+    '<p class="sub" style="margin-top:8px">Pausenwochen unterbrechen deine Serie nicht. Erholung gehört dazu.</p>' +
+    '</div>' +
+    '<div class="card">' +
+    '<h3>Einrichtung</h3>' +
+    '<p class="sub">Ziel, Trainingsort, Häufigkeit und Trainingstage neu festlegen.</p>' +
+    '<button class="btn btn-ghost" data-action="rerun-setup" style="margin-top:10px">Einrichtung erneut öffnen</button>' +
+    '</div>' +
     '<div class="section-title">Warum die App so tickt</div>' +
     '<div class="card">' +
     '<p class="sub">Die Empfehlungen kommen nicht aus dem Bauch, sondern aus Studien:</p>' +
@@ -1242,52 +1328,128 @@ function wipeAll() {
   location.reload();
 }
 
-/* ===== Onboarding (Erststart) ===== */
+/* ===== Onboarding (personalisierte Einrichtung) ===== */
 
 let obStep = 0;
+let obData = null;
 
-const OB_STEPS = [
-  {
-    emoji: '💪',
-    title: 'Willkommen bei Mein Training',
-    text: 'Dein Plan, deine Gewichte, dein Fortschritt: alles in einer App. Deine Daten bleiben komplett auf diesem Gerät, kein Konto nötig.'
-  },
-  {
-    emoji: '🧠',
-    title: 'Die App denkt mit',
-    text: 'Aufwärmsätze werden automatisch berechnet, und nach jedem Training sagt dir die App, ob du das Gewicht steigern sollst. Übung antippen zeigt die Ausführung mit Bild, mit ⇄ tauschst du sie gegen eine ähnliche.'
-  },
-  {
-    emoji: '🚀',
-    title: 'Bereit fürs Training?',
-    text: 'Im Training bleibt der Bildschirm an und der Pausen-Timer startet nach jedem Satz von allein. Wichtig: Die App ersetzt keinen Arzt. Bei Schmerzen Übung abbrechen und abklären lassen.'
-  }
+function defaultObData() {
+  return { goal: 'fitness', experience: 'wiedereinstieg', location: 'gym', freq: 3, days: [0, 2, 4], bw: '' };
+}
+
+const OB_GOALS = [
+  { id: 'muskeln', label: '💪 Muskelaufbau' },
+  { id: 'kraft', label: '🏋️ Stärker werden' },
+  { id: 'fitness', label: '⚡ Allgemeine Fitness' },
+  { id: 'gewicht', label: '⚖️ Gewichtsmanagement' }
 ];
+const OB_EXP = [
+  { id: 'neu', label: 'Ganz neu' },
+  { id: 'wiedereinstieg', label: 'Wiedereinsteiger' },
+  { id: 'regelmaessig', label: 'Trainiere schon regelmäßig' }
+];
+const OB_LOC = [
+  { id: 'gym', label: '🏢 Im Gym' },
+  { id: 'zuhause', label: '🏠 Zuhause' }
+];
+
+function obChips(list, key, current) {
+  return '<div class="chip-row ob-chips">' + list.map(function (o) {
+    return '<button class="chip' + (o.id === current ? ' active' : '') + '" data-action="ob-set" data-k="' + key + '" data-v="' + o.id + '">' + o.label + '</button>';
+  }).join('') + '</div>';
+}
+
+function obPlanDayCount() {
+  return (obData.location === 'gym' && obData.freq >= 4) ? 5 : 3;
+}
 
 function renderOnboarding() {
   const root = document.getElementById('overlay-root');
-  const s = OB_STEPS[obStep];
-  const dots = OB_STEPS.map(function (_, i) {
-    return '<span class="ob-dot' + (i === obStep ? ' on' : '') + '"></span>';
-  }).join('');
-  const last = obStep === OB_STEPS.length - 1;
+  const total = 5;
+  let body = '';
+  let footer = '';
+
+  if (obStep === 0) {
+    body =
+      '<div class="finish-emoji">💪</div>' +
+      '<h2>' + esc(BRAND.name) + '</h2>' +
+      '<p class="sub" style="margin-top:6px"><b>' + esc(BRAND.claim) + '</b> Dein Plan, deine Gewichte, dein Fortschritt: alles in einer App. Alle Daten bleiben nur auf diesem Gerät, kein Konto nötig.</p>';
+    footer =
+      '<button class="btn btn-primary" data-action="ob-next">Einrichten (1 Minute)</button>' +
+      '<button class="btn btn-ghost" data-action="ob-quick" style="margin-top:10px">Schnell starten mit Standard-Plan</button>';
+  } else if (obStep === 1) {
+    body =
+      '<h2>Was ist dein Ziel?</h2>' + obChips(OB_GOALS, 'goal', obData.goal) +
+      '<h2 style="margin-top:18px">Wie viel Erfahrung hast du?</h2>' + obChips(OB_EXP, 'experience', obData.experience);
+  } else if (obStep === 2) {
+    const freqs = obData.location === 'zuhause' ? [2, 3, 4] : [2, 3, 4, 5];
+    body =
+      '<h2>Wo trainierst du?</h2>' + obChips(OB_LOC, 'location', obData.location) +
+      '<h2 style="margin-top:18px">Wie oft pro Woche?</h2>' +
+      '<div class="chip-row ob-chips">' + freqs.map(function (n) {
+        return '<button class="chip' + (n === obData.freq ? ' active' : '') + '" data-action="ob-set" data-k="freq" data-v="' + n + '">' + n + '×</button>';
+      }).join('') + '</div>' +
+      '<p class="sub" style="margin-top:10px">' + (obData.location === 'zuhause'
+        ? 'Zuhause bekommst du einen Ganzkörper-Plan mit Kurzhanteln und Körpergewicht.'
+        : 'Bei 2-3× bekommst du einen Ganzkörper-Plan, bei 4-5× einen 5er-Split.') + '</p>';
+  } else if (obStep === 3) {
+    const need = obPlanDayCount();
+    body =
+      '<h2>An welchen Tagen?</h2>' +
+      '<p class="sub" style="margin:6px 0 10px">Wähle ' + need + ' Tage für deinen Plan (dein Wochenziel: ' + obData.freq + ' Trainings). Später jederzeit änderbar.</p>' +
+      '<div class="chip-row ob-chips">' + WEEKDAYS_SHORT.map(function (w, i) {
+        return '<button class="chip' + (obData.days.indexOf(i) !== -1 ? ' active' : '') + '" data-action="ob-day" data-v="' + i + '">' + w + '</button>';
+      }).join('') + '</div>';
+  } else {
+    body =
+      '<h2>Dein Körpergewicht?</h2>' +
+      '<p class="sub" style="margin:6px 0 12px">Nur für die grobe Kalorien-Schätzung, bleibt auf deinem Gerät. Kannst du auch überspringen.</p>' +
+      '<div style="display:flex;justify-content:center"><span class="bw-wrap"><input type="number" class="bw-input" min="40" max="300" step="0.5" placeholder="80" value="' + esc(obData.bw) + '" data-ob-field="bw"> kg</span></div>';
+    footer = '<button class="btn btn-primary" data-action="ob-finish">Los geht’s 💪</button>';
+  }
+
+  if (!footer) footer = '<button class="btn btn-primary" data-action="ob-next">Weiter</button>';
+  const back = obStep > 0 ? '<button class="btn btn-ghost" data-action="ob-prev" style="margin-top:10px">Zurück</button>' : '';
+  let dots = '';
+  for (let i = 0; i < total; i++) dots += '<span class="ob-dot' + (i === obStep ? ' on' : '') + '"></span>';
+
   root.innerHTML =
     '<div class="overlay-backdrop">' +
-    '<div class="finish-card ob-card">' +
-    '<div class="finish-emoji">' + s.emoji + '</div>' +
-    '<h2>' + s.title + '</h2>' +
-    '<p class="sub" style="margin-top:10px">' + s.text + '</p>' +
+    '<div class="finish-card ob-card">' + body +
     '<div class="ob-dots">' + dots + '</div>' +
-    '<button class="btn btn-primary" data-action="' + (last ? 'ob-done' : 'ob-next') + '">' + (last ? 'Los geht’s 💪' : 'Weiter') + '</button>' +
-    (!last ? '<button class="btn btn-ghost" data-action="ob-done" style="margin-top:10px">Überspringen</button>' : '') +
+    footer + back +
     '</div></div>';
   root.classList.add('open');
 }
 
-function finishOnboarding() {
+function applyOnboarding(d) {
+  state.settings.goal = d.goal;
+  state.settings.experience = d.experience;
+  state.settings.weeklyTarget = d.freq;
+  const bw = num(d.bw);
+  if (!isNaN(bw) && bw >= 40 && bw <= 300) state.settings.bodyWeight = bw;
+
+  /* Heim-Plan nur einsetzen, wenn der Ort neu auf „Zuhause" gestellt wird */
+  if (d.location === 'zuhause' && (state.settings.location !== 'zuhause' || !state.settings.onboarded)) {
+    if (state.logs.length === 0 || confirm('Heim-Plan einsetzen? Dein bisheriger Ganzkörper-Plan wird ersetzt (dein Verlauf bleibt erhalten).')) {
+      state.plans['3x'].days = homePlanDays();
+    }
+  }
+  state.settings.location = d.location;
+  state.mode = (d.location === 'gym' && d.freq >= 4) ? '5x' : '3x';
+
+  const days = d.days.slice().sort(function (a, b) { return a - b; });
+  state.plans[state.mode].days.forEach(function (day, i) {
+    if (typeof days[i] === 'number') day.weekday = days[i];
+  });
+
   state.settings.onboarded = true;
+  chartExName = null;
+  chartSelIdx = null;
   saveState();
   closeOverlay();
+  showView('heute');
+  toast('Alles eingerichtet. ' + BRAND.claim + ' 💪');
 }
 
 /* ===== Toast ===== */
@@ -1381,8 +1543,69 @@ function handleAction(action, el) {
     case 'close-modal': closeModal(); break;
     case 'noop': break;
     case 'finish-close': closeOverlay(); break;
-    case 'ob-next': obStep++; renderOnboarding(); break;
-    case 'ob-done': finishOnboarding(); break;
+    case 'ob-next': {
+      if (obStep === 3 && obData.days.length !== obPlanDayCount()) {
+        toast('Bitte genau ' + obPlanDayCount() + ' Tage wählen');
+        break;
+      }
+      obStep++;
+      renderOnboarding();
+      break;
+    }
+    case 'ob-prev': obStep--; renderOnboarding(); break;
+    case 'ob-set': {
+      const k = el.dataset.k;
+      obData[k] = (k === 'freq') ? parseInt(el.dataset.v, 10) : el.dataset.v;
+      if (k === 'freq' || k === 'location') {
+        if (obData.location === 'zuhause' && obData.freq > 4) obData.freq = 4;
+        obData.days = obPlanDayCount() === 5 ? [0, 1, 2, 3, 4] : [0, 2, 4];
+      }
+      renderOnboarding();
+      break;
+    }
+    case 'ob-day': {
+      const v = parseInt(el.dataset.v, 10);
+      const di2 = obData.days.indexOf(v);
+      if (di2 !== -1) obData.days.splice(di2, 1);
+      else if (obData.days.length < obPlanDayCount()) obData.days.push(v);
+      else { toast('Maximal ' + obPlanDayCount() + ' Tage: erst einen abwählen'); break; }
+      renderOnboarding();
+      break;
+    }
+    case 'ob-quick': applyOnboarding(defaultObData()); break;
+    case 'ob-finish': applyOnboarding(obData); break;
+    case 'set-target':
+      state.settings.weeklyTarget = parseInt(el.dataset.v, 10);
+      saveState();
+      renderMehr();
+      toast('Wochenziel: ' + el.dataset.v + ' Trainings pro Woche');
+      break;
+    case 'toggle-streak':
+      state.settings.showStreak = !state.settings.showStreak;
+      saveState();
+      renderMehr();
+      break;
+    case 'toggle-pause': {
+      const monIso = isoOf(mondayOfCurrentWeek());
+      const arr = state.settings.pausedWeeks;
+      const pi = arr.indexOf(monIso);
+      if (pi !== -1) { arr.splice(pi, 1); toast('Pause aufgehoben'); }
+      else { arr.push(monIso); toast('Diese Woche zählt als Pause ⏸'); }
+      saveState();
+      renderMehr();
+      break;
+    }
+    case 'rerun-setup':
+      obStep = 0;
+      obData = defaultObData();
+      obData.goal = state.settings.goal;
+      obData.experience = state.settings.experience;
+      obData.location = state.settings.location;
+      obData.freq = Math.min(5, Math.max(2, getWeeklyTarget()));
+      if (obData.location === 'zuhause' && obData.freq > 4) obData.freq = 4;
+      obData.days = obPlanDayCount() === 5 ? [0, 1, 2, 3, 4] : [0, 2, 4];
+      renderOnboarding();
+      break;
     case 'timer-stop': resetTimer(); updateTimerUI(); break;
     case 'chart-ex': chartExName = el.dataset.name; chartSelIdx = null; renderVerlauf(); break;
     case 'chart-dot': chartSelIdx = parseInt(el.dataset.i, 10); renderVerlauf(); break;
@@ -1418,8 +1641,8 @@ function init() {
     handleAction(el.dataset.action, el);
   });
 
-  /* Eingaben (Delegation) */
-  document.getElementById('main').addEventListener('input', function (e) {
+  /* Eingaben (Delegation, auch fürs Onboarding-Overlay) */
+  document.addEventListener('input', function (e) {
     const t = e.target;
     if (t.dataset.field && state.draft) {
       const entry = state.draft.entries[parseInt(t.dataset.ex, 10)];
@@ -1428,6 +1651,10 @@ function init() {
         set[t.dataset.field] = t.value;
         saveState();
       }
+      return;
+    }
+    if (t.dataset.obField && obData) {
+      obData[t.dataset.obField] = t.value;
       return;
     }
     if (t.dataset.cardioField && state.draft) {
@@ -1484,6 +1711,7 @@ function init() {
 
   if (!state.settings.onboarded) {
     obStep = 0;
+    obData = defaultObData();
     renderOnboarding();
   }
 }

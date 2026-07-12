@@ -219,6 +219,20 @@ const EX_INFO = {
   'Crunch (Maschine)': {
     type: 'isolation', muscle: 'bauch', inc: 2.5, rest: 90, img: 'Ab_Crunch_Machine',
     cues: ['Sitz einstellen, Griffe fassen', 'Mit den Bauchmuskeln einrollen', 'Langsam zurück, nicht fallen lassen']
+  },
+
+  /* ===== Heim-Übungen (Körpergewicht, ohne Geräte) ===== */
+  'Liegestütze': {
+    type: 'compound', muscle: 'brust-druck', inc: 2.5, rest: 90, img: 'Pushups',
+    cues: ['Hände etwas breiter als schulterbreit', 'Körper bildet eine Linie, Bauch fest', 'Brust Richtung Boden, kraftvoll hochdrücken. Zu schwer? Knie ablegen.']
+  },
+  'Crunches': {
+    type: 'isolation', muscle: 'bauch', inc: 2.5, rest: 60, img: 'Crunches',
+    cues: ['Unterer Rücken bleibt am Boden', 'Mit dem Bauch einrollen, nicht am Kopf ziehen', 'Langsam ablassen']
+  },
+  'Glute Bridge': {
+    type: 'compound', muscle: 'po', inc: 2.5, rest: 90, img: 'Butt_Lift_Bridge',
+    cues: ['Fersen nah am Po aufstellen', 'Hüfte hochdrücken, oben den Po fest anspannen', 'Langsam ablassen. Schwerer machen: Gewicht auf die Hüfte legen.']
   }
 };
 
@@ -232,7 +246,7 @@ function round25(x) { return Math.round(x / 2.5) * 2.5; }
 
 function fmtKg(w) {
   if (w === null || w === undefined || isNaN(w)) return '–';
-  return (Math.round(w * 10) / 10).toLocaleString('de-DE') + ' kg';
+  return fmtWeightVal(w);
 }
 
 function parseRange(repsStr) {
