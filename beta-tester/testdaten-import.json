@@ -1,0 +1,36 @@
+{
+  "app": "stemma",
+  "backupVersion": 1,
+  "dataVersion": 7,
+  "appVersion": "v7.2-beta",
+  "exportedAt": "2026-07-01T10:00:00.000Z",
+  "counts": { "logs": 2 },
+  "state": {
+    "version": 7,
+    "mode": "3x",
+    "plans": {
+      "3x": { "label": "3x", "days": [
+        { "id": "A", "short": "Tag A", "name": "Beispiel-Tag", "weekday": 0, "exercises": [
+          { "id": "demo1", "name": "Beispiel-Übung Kurzhantel", "sets": 3, "reps": "8-10", "workWeight": 12.5, "failStreak": 0, "lastResult": "up" }
+        ] }
+      ] },
+      "5x": { "label": "5x", "days": [
+        { "id": "P1", "short": "Push", "name": "Beispiel-Push", "weekday": 0, "exercises": [
+          { "id": "demo2", "name": "Beispiel-Übung Drücken", "sets": 3, "reps": "8-10", "workWeight": null, "failStreak": 0, "lastResult": "" }
+        ] }
+      ] }
+    },
+    "logs": [
+      { "id": "demoL1", "date": "2026-06-22", "mode": "3x", "dayId": "A", "dayName": "Tag A · Beispiel-Tag",
+        "entries": [ { "exId": "demo1", "name": "Beispiel-Übung Kurzhantel", "repsTarget": "8-10",
+          "sets": [ { "weight": "10", "reps": "10", "done": true, "warmup": false }, { "weight": "10", "reps": "10", "done": true, "warmup": false } ] } ],
+        "durationMin": 25, "kcal": 120 },
+      { "id": "demoL2", "date": "2026-06-24", "mode": "3x", "dayId": "A", "dayName": "Tag A · Beispiel-Tag",
+        "entries": [ { "exId": "demo1", "name": "Beispiel-Übung Kurzhantel", "repsTarget": "8-10",
+          "sets": [ { "weight": "12.5", "reps": "9", "done": true, "warmup": false } ] } ],
+        "durationMin": 22, "kcal": 105 }
+    ],
+    "settings": { "autoTimer": true, "bodyWeight": 80, "onboarded": true, "weeklyTarget": 3, "pausedWeeks": [], "showStreak": true, "goal": "fitness", "experience": "wiedereinstieg", "location": "zuhause" },
+    "draft": null
+  }
+}
