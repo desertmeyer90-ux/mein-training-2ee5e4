@@ -9,6 +9,10 @@
    ===================================================== */
 
 const STORAGE_KEY = 'mein-training-v1';
+const CURRENT_DATA_VERSION = 7;   /* Version des gespeicherten Datenformats */
+const BACKUP_FORMAT_VERSION = 1;  /* Version der Backup-Datei-Hülle */
+const PREIMPORT_KEY = STORAGE_KEY + '-vor-import';
+const MAX_IMPORT_BYTES = 10 * 1024 * 1024;
 const WEEKDAYS_SHORT = ['Mo', 'Di', 'Mi', 'Do', 'Fr', 'Sa', 'So'];
 const WEEKDAYS_LONG = ['Montag', 'Dienstag', 'Mittwoch', 'Donnerstag', 'Freitag', 'Samstag', 'Sonntag'];
 
@@ -269,7 +273,7 @@ function loadState() {
   if (typeof s.settings.experience !== 'string') s.settings.experience = 'wiedereinstieg';
   if (typeof s.settings.location !== 'string') s.settings.location = 'gym';
 
-  s.version = 7;
+  s.version = CURRENT_DATA_VERSION;
   return s;
 }
 
@@ -1263,11 +1267,13 @@ function renderMehr() {
     '</ul></div>' +
     '<div class="section-title">Daten</div>' +
     '<div class="card">' +
-    '<p class="sub" style="margin-bottom:12px">Alles wird nur lokal in diesem Browser gespeichert. Mit dem Backup kannst du deine Daten sichern oder auf ein anderes Gerät mitnehmen.</p>' +
-    '<div class="btn-row">' +
+    '<p class="sub"><b>Wichtig zu wissen:</b> Deine Daten leben nur in diesem Browser auf diesem Gerät. Wenn du Browser-Daten löschst oder das Gerät wechselst, sind sie ohne Backup weg. Sichere dir deshalb regelmäßig ein Backup, zum Beispiel einmal pro Woche.</p>' +
+    '<div class="btn-row" style="margin-top:12px">' +
     '<button class="btn btn-ghost" data-action="export">Backup speichern</button>' +
     '<button class="btn btn-ghost" data-action="import">Backup laden</button>' +
     '</div>' +
+    '<button class="btn btn-ghost" data-action="export-csv" style="margin-top:10px">Trainings als CSV exportieren (für Excel)</button>' +
+    (localStorage.getItem(PREIMPORT_KEY) ? '<button class="btn btn-ghost" data-action="restore-preimport" style="margin-top:10px">Stand von vor dem letzten Import wiederherstellen</button>' : '') +
     '</div>' +
     '<div class="card">' +
     '<button class="btn btn-ghost" data-action="reset-plan">Pläne auf Standard zurücksetzen</button>' +
@@ -1294,42 +1300,387 @@ function setMode(mode) {
   toast('Umgestellt auf ' + (mode === '3x' ? '3× pro Woche' : '5× pro Woche'));
 }
 
-function exportData() {
-  const blob = new Blob([JSON.stringify(state, null, 2)], { type: 'application/json' });
+/* =====================================================
+   Datensicherung: gehärteter Export, validierter Import
+   mit Vorschau, Auto-Sicherung und Integritätsprüfung.
+   Grundsatz: Ein Import verändert NIE ungeprüft Daten,
+   ein fehlgeschlagener Import lässt alles unangetastet.
+   ===================================================== */
+
+function downloadFile(name, content, mime) {
+  const blob = new Blob([content], { type: mime });
   const a = document.createElement('a');
   a.href = URL.createObjectURL(blob);
-  a.download = 'mein-training-backup-' + todayISO() + '.json';
+  a.download = name;
   document.body.appendChild(a);
   a.click();
   document.body.removeChild(a);
   URL.revokeObjectURL(a.href);
+}
+
+function exportData() {
+  const backup = {
+    app: 'stemma',
+    backupVersion: BACKUP_FORMAT_VERSION,
+    dataVersion: state.version || CURRENT_DATA_VERSION,
+    appVersion: BRAND.version,
+    exportedAt: new Date().toISOString(),
+    counts: { logs: state.logs.length },
+    /* draft (laufendes Training) ist flüchtig und gehört nicht ins Backup */
+    state: { version: state.version, mode: state.mode, plans: state.plans, logs: state.logs, settings: state.settings, draft: null }
+  };
+  downloadFile('stemma-backup-' + todayISO() + '.json', JSON.stringify(backup, null, 2), 'application/json');
   toast('Backup heruntergeladen ✓');
 }
 
+/* CSV: bewusst NUR Trainingsdaten, ohne Körpergewicht und Einstellungen */
+function csvCell(v) {
+  v = (v === null || v === undefined) ? '' : String(v);
+  if (/[";\r\n]/.test(v)) v = '"' + v.replace(/"/g, '""') + '"';
+  return v;
+}
+
+function exportCsv() {
+  const rows = [['Datum', 'Trainingstag', 'Uebung', 'Satz', 'Aufwaermsatz', 'Gewicht_kg', 'Wiederholungen', 'Abgehakt', 'Dauer_min', 'Kalorien_geschaetzt', 'Cardio_Art', 'Cardio_Minuten']];
+  state.logs.forEach(function (log) {
+    let firstRow = true;
+    log.entries.forEach(function (en) {
+      let setNum = 0;
+      en.sets.forEach(function (s) {
+        if (!s.warmup) setNum++;
+        rows.push([
+          log.date, log.dayName, en.name,
+          s.warmup ? '' : setNum, s.warmup ? 'ja' : 'nein',
+          s.weight, s.reps, s.done ? 'ja' : 'nein',
+          (firstRow && log.durationMin) ? log.durationMin : '',
+          (firstRow && log.kcal) ? log.kcal : '',
+          (firstRow && log.cardio) ? log.cardio.name : '',
+          (firstRow && log.cardio) ? log.cardio.minutes : ''
+        ]);
+        firstRow = false;
+      });
+    });
+  });
+  /* \ufeff = UTF-8-BOM, damit Excel Umlaute korrekt erkennt */
+  const csv = '\ufeff' + rows.map(function (r) { return r.map(csvCell).join(';'); }).join('\r\n');
+  downloadFile('stemma-trainings-' + todayISO() + '.csv', csv, 'text/csv;charset=utf-8');
+  toast('CSV heruntergeladen ✓');
+}
+
+/* ===== Import: Validierung ===== */
+
+function asStr(v, max) {
+  if (typeof v !== 'string') v = (v === null || v === undefined) ? '' : String(v);
+  return v.slice(0, max || 200);
+}
+
+function clampInt(v, min, max, dflt) {
+  const n = parseInt(v, 10);
+  if (isNaN(n)) return dflt;
+  return Math.min(max, Math.max(min, n));
+}
+
+function numOrNull(v) {
+  const n = (typeof v === 'number') ? v : parseFloat(v);
+  return (typeof n === 'number' && !isNaN(n)) ? n : null;
+}
+
+function validateBackupState(p) {
+  const errors = [];
+  const warnings = [];
+  if (!p || typeof p !== 'object' || Array.isArray(p)) {
+    return { ok: false, errors: ['Der Inhalt ist kein Stemma-Datenbestand.'], warnings: warnings, stats: null };
+  }
+  ['3x', '5x'].forEach(function (k) {
+    const pl = p.plans && p.plans[k];
+    if (!pl || !Array.isArray(pl.days) || pl.days.length === 0) {
+      errors.push('Trainingsplan „' + k + '" fehlt oder ist beschädigt.');
+      return;
+    }
+    pl.days.forEach(function (d, i) {
+      if (!d || typeof d !== 'object' || !Array.isArray(d.exercises)) {
+        errors.push('Plan „' + k + '", Tag ' + (i + 1) + ' ist beschädigt.');
+        return;
+      }
+      d.exercises.forEach(function (e, j) {
+        if (!e || typeof e.name !== 'string' || !e.name.trim()) {
+          errors.push('Plan „' + k + '", Tag ' + (i + 1) + ', Übung ' + (j + 1) + ': Name fehlt.');
+        }
+      });
+    });
+  });
+  if (!Array.isArray(p.logs)) {
+    errors.push('Der Trainings-Verlauf fehlt oder ist beschädigt.');
+  } else {
+    if (p.logs.length > 5000) warnings.push('Sehr viele Trainings (' + p.logs.length + '): die neuesten 5000 werden übernommen.');
+    p.logs.forEach(function (l, i) {
+      if (!l || typeof l !== 'object') { errors.push('Verlaufs-Eintrag ' + (i + 1) + ' ist beschädigt.'); return; }
+      if (typeof l.date !== 'string' || !/^\d{4}-\d{2}-\d{2}$/.test(l.date)) errors.push('Verlaufs-Eintrag ' + (i + 1) + ': ungültiges Datum.');
+      if (!Array.isArray(l.entries)) errors.push('Verlaufs-Eintrag ' + (i + 1) + ': Übungsdaten fehlen.');
+    });
+  }
+  if (p.settings === undefined || p.settings === null || typeof p.settings !== 'object') {
+    warnings.push('Einstellungen fehlen im Backup: Standardwerte werden gesetzt.');
+  }
+  if (p.mode !== '3x' && p.mode !== '5x') warnings.push('Trainings-Modus unbekannt: Ganzkörper-Plan wird aktiv gesetzt.');
+
+  let first = null, last = null;
+  if (Array.isArray(p.logs)) {
+    p.logs.forEach(function (l) {
+      if (l && typeof l.date === 'string') {
+        if (!first || l.date < first) first = l.date;
+        if (!last || l.date > last) last = l.date;
+      }
+    });
+  }
+  const stats = {
+    logs: Array.isArray(p.logs) ? Math.min(p.logs.length, 5000) : 0,
+    days3: (p.plans && p.plans['3x'] && Array.isArray(p.plans['3x'].days)) ? p.plans['3x'].days.length : 0,
+    days5: (p.plans && p.plans['5x'] && Array.isArray(p.plans['5x'].days)) ? p.plans['5x'].days.length : 0,
+    firstDate: first,
+    lastDate: last
+  };
+  return { ok: errors.length === 0, errors: errors, warnings: warnings, stats: stats };
+}
+
+/* ===== Import: Bereinigung (nur bekannte Felder übernehmen) ===== */
+
+function sanitizeExercise(e) {
+  const w = numOrNull(e.workWeight);
+  return {
+    id: asStr(e.id, 40) || uid(),
+    name: asStr(e.name, 80).trim(),
+    sets: clampInt(e.sets, 1, 10, 3),
+    reps: asStr(e.reps, 20) || '8-10',
+    workWeight: (w !== null && w > 0 && w < 1000) ? w : null,
+    failStreak: clampInt(e.failStreak, 0, 99, 0),
+    lastResult: ['up', 'down', 'hold', 'hold-low'].indexOf(e.lastResult) !== -1 ? e.lastResult : ''
+  };
+}
+
+function sanitizeDay(d, i) {
+  return {
+    id: asStr(d.id, 10) || ('T' + i),
+    short: asStr(d.short, 20) || ('Tag ' + (i + 1)),
+    name: asStr(d.name, 60) || 'Training',
+    weekday: clampInt(d.weekday, 0, 6, i % 7),
+    exercises: d.exercises.slice(0, 20).map(sanitizeExercise).filter(function (e) { return e.name; })
+  };
+}
+
+function sanitizeSet(x) {
+  x = (x && typeof x === 'object') ? x : {};
+  return { weight: asStr(x.weight, 10), reps: asStr(x.reps, 10), done: x.done === true, warmup: x.warmup === true };
+}
+
+function sanitizeEntry(en) {
+  en = (en && typeof en === 'object') ? en : {};
+  return {
+    exId: asStr(en.exId, 40),
+    name: asStr(en.name, 80),
+    repsTarget: asStr(en.repsTarget, 20),
+    sets: Array.isArray(en.sets) ? en.sets.slice(0, 20).map(sanitizeSet) : []
+  };
+}
+
+function sanitizeLog(l) {
+  const out = {
+    id: asStr(l.id, 40) || uid(),
+    date: l.date,
+    mode: l.mode === '5x' ? '5x' : '3x',
+    dayId: asStr(l.dayId, 10),
+    dayName: asStr(l.dayName, 60),
+    entries: Array.isArray(l.entries) ? l.entries.slice(0, 30).map(sanitizeEntry) : []
+  };
+  if (Array.isArray(l.results)) {
+    out.results = l.results.slice(0, 30).map(function (r) {
+      r = (r && typeof r === 'object') ? r : {};
+      return { name: asStr(r.name, 80), verdict: asStr(r.verdict, 10), text: asStr(r.text, 120), isPR: r.isPR === true };
+    });
+  }
+  const dm = numOrNull(l.durationMin);
+  if (dm !== null && dm > 0 && dm < 10000) out.durationMin = Math.round(dm);
+  const kc = numOrNull(l.kcal);
+  if (kc !== null && kc >= 0 && kc < 100000) out.kcal = Math.round(kc);
+  if (l.cardio && typeof l.cardio === 'object') {
+    const cm = numOrNull(l.cardio.minutes);
+    if (cm !== null && cm > 0) {
+      out.cardio = {
+        type: asStr(l.cardio.type, 10),
+        name: asStr(l.cardio.name, 40),
+        minutes: Math.min(600, Math.max(1, Math.round(cm))),
+        kcal: Math.max(0, Math.round(numOrNull(l.cardio.kcal) || 0))
+      };
+    }
+  }
+  return out;
+}
+
+function sanitizeSettings(s) {
+  s = (s && typeof s === 'object') ? s : {};
+  return {
+    autoTimer: s.autoTimer !== false,
+    bodyWeight: (typeof s.bodyWeight === 'number' && s.bodyWeight >= 40 && s.bodyWeight <= 300) ? s.bodyWeight : 80,
+    onboarded: s.onboarded === true,
+    weeklyTarget: clampInt(s.weeklyTarget, 1, 7, 3),
+    pausedWeeks: Array.isArray(s.pausedWeeks)
+      ? s.pausedWeeks.filter(function (w) { return typeof w === 'string' && /^\d{4}-\d{2}-\d{2}$/.test(w); }).slice(0, 260)
+      : [],
+    showStreak: s.showStreak !== false,
+    goal: asStr(s.goal, 30) || 'fitness',
+    experience: asStr(s.experience, 30) || 'wiedereinstieg',
+    location: s.location === 'zuhause' ? 'zuhause' : 'gym'
+  };
+}
+
+function sanitizeStateForImport(p) {
+  return {
+    version: clampInt(p.version, 1, CURRENT_DATA_VERSION, 1),
+    mode: p.mode === '5x' ? '5x' : '3x',
+    plans: {
+      '3x': { label: asStr(p.plans['3x'].label, 40) || '3x', days: p.plans['3x'].days.slice(0, 7).map(sanitizeDay) },
+      '5x': { label: asStr(p.plans['5x'].label, 40) || '5x', days: p.plans['5x'].days.slice(0, 7).map(sanitizeDay) }
+    },
+    logs: p.logs.slice(-5000).map(sanitizeLog),
+    settings: sanitizeSettings(p.settings),
+    draft: null
+  };
+}
+
+/* ===== Import: Ablauf ===== */
+
+let pendingImport = null;
+let importBusy = false;
+
+function showImportError(html) {
+  const root = document.getElementById('modal-root');
+  root.innerHTML =
+    '<div class="modal-backdrop" data-action="close-modal">' +
+    '<div class="modal-sheet" data-action="noop">' +
+    '<h3>Import nicht möglich</h3>' +
+    '<p class="sub" style="margin-top:10px">' + html + '</p>' +
+    '<button class="btn btn-primary" data-action="close-modal" style="margin-top:14px">Verstanden</button>' +
+    '</div></div>';
+  root.classList.add('open');
+}
+
+function showImportPreview(meta, stats, warnings) {
+  const root = document.getElementById('modal-root');
+  const lines = [
+    ['Erstellt am', meta.exportedAt ? fmtDate(meta.exportedAt.slice(0, 10)) : 'unbekannt (älteres Format)'],
+    ['Datenformat', 'Version ' + meta.dataVersion + (meta.legacy ? ' (altes Backup)' : '')],
+    ['Trainings', String(stats.logs)],
+    ['Pläne', stats.days3 + ' Tage (Ganzkörper) + ' + stats.days5 + ' Tage (5er-Split)'],
+    ['Zeitraum', stats.firstDate ? (fmtDate(stats.firstDate) + ' bis ' + fmtDate(stats.lastDate)) : 'keine Trainings enthalten']
+  ];
+  const rows = lines.map(function (l) {
+    return '<div class="log-details" style="border:none;margin:0;padding:2px 0"><b>' + l[0] + ':</b> ' + esc(l[1]) + '</div>';
+  }).join('');
+  const warnHtml = warnings.length
+    ? '<p class="banner banner-down" style="margin-top:12px">⚠️ ' + warnings.map(esc).join('<br>⚠️ ') + '</p>'
+    : '';
+  root.innerHTML =
+    '<div class="modal-backdrop" data-action="close-modal">' +
+    '<div class="modal-sheet" data-action="noop">' +
+    '<h3>Backup prüfen</h3>' +
+    '<div style="margin-top:10px">' + rows + '</div>' +
+    warnHtml +
+    '<p class="sub" style="margin-top:12px">Dein aktueller Stand wird vor dem Import automatisch gesichert und kann danach wiederhergestellt werden.</p>' +
+    '<button class="btn btn-primary" data-action="import-confirm" style="margin-top:14px">Ja, dieses Backup importieren</button>' +
+    '<button class="btn btn-ghost" data-action="close-modal" style="margin-top:10px">Abbrechen</button>' +
+    '</div></div>';
+  root.classList.add('open');
+}
+
 function importData(file) {
+  if (importBusy) { toast('Ein Import läuft bereits …'); return; }
+  if (file.size > MAX_IMPORT_BYTES) {
+    showImportError('Die Datei ist ungewöhnlich groß (' + Math.round(file.size / 1024 / 1024) + ' MB). Ein Stemma-Backup ist deutlich kleiner: bitte prüfe, ob du die richtige Datei gewählt hast.');
+    return;
+  }
+  importBusy = true;
   const reader = new FileReader();
+  reader.onerror = function () {
+    importBusy = false;
+    showImportError('Die Datei konnte nicht gelesen werden. Bitte versuche es noch einmal.');
+  };
   reader.onload = function () {
-    let data = null;
+    importBusy = false;
+    let obj = null;
     try {
-      data = JSON.parse(reader.result);
+      obj = JSON.parse(reader.result);
     } catch (e) {
-      alert('Die Datei konnte nicht gelesen werden (kein gültiges Backup).');
+      showImportError('Das ist keine gültige Backup-Datei (der Inhalt ist kein lesbares JSON). Bitte wähle die .json-Datei aus „Backup speichern".');
       return;
     }
-    if (!data || typeof data !== 'object' || !data.plans || !Array.isArray(data.logs)) {
-      alert('Das sieht nicht wie ein Backup dieser App aus.');
+
+    let payload = null;
+    const meta = { exportedAt: null, dataVersion: 1, legacy: false };
+    if (obj && obj.app === 'stemma' && obj.state && typeof obj.state === 'object') {
+      if (clampInt(obj.backupVersion, 0, 999, 0) > BACKUP_FORMAT_VERSION) {
+        showImportError('Dieses Backup stammt aus einer neueren Stemma-Version. Bitte aktualisiere zuerst die App und versuche es dann erneut.');
+        return;
+      }
+      payload = obj.state;
+      meta.exportedAt = asStr(obj.exportedAt, 40) || null;
+      meta.dataVersion = clampInt(obj.dataVersion, 1, 999, 1);
+    } else if (obj && obj.plans && Array.isArray(obj.logs)) {
+      payload = obj;
+      meta.legacy = true;
+      meta.dataVersion = clampInt(obj.version, 1, 999, 1);
+    } else {
+      showImportError('Das sieht nicht wie ein Stemma-Backup aus. Bitte wähle die .json-Datei aus „Backup speichern".');
       return;
     }
-    if (!confirm('Backup laden? Deine aktuellen Daten werden dabei ersetzt.')) return;
-    try {
-      localStorage.setItem(STORAGE_KEY, JSON.stringify(data));
-    } catch (e) {
-      alert('Speichern fehlgeschlagen.');
+    if (meta.dataVersion > CURRENT_DATA_VERSION) {
+      showImportError('Dieses Backup nutzt ein neueres Datenformat (Version ' + meta.dataVersion + '). Bitte aktualisiere zuerst die App und versuche es dann erneut.');
       return;
     }
-    location.reload();
+
+    const v = validateBackupState(payload);
+    if (!v.ok) {
+      showImportError('Dieses Backup ist beschädigt und wird zum Schutz deiner Daten nicht importiert:<br>· ' + v.errors.slice(0, 4).map(esc).join('<br>· '));
+      return;
+    }
+    if (meta.legacy) v.warnings.push('Älteres Backup-Format: es wird beim Import automatisch auf den neuesten Stand gebracht.');
+    if (state.draft) v.warnings.push('Dein gerade laufendes (nicht abgeschlossenes) Training geht beim Import verloren.');
+
+    pendingImport = sanitizeStateForImport(payload);
+    showImportPreview(meta, v.stats, v.warnings);
   };
   reader.readAsText(file);
+}
+
+function confirmImport() {
+  if (!pendingImport) return;
+  const incoming = pendingImport;
+  pendingImport = null;
+  closeModal();
+
+  /* 1. Auto-Sicherung: ohne erfolgreiche Sicherung KEIN Import */
+  try {
+    localStorage.setItem(PREIMPORT_KEY, JSON.stringify(state));
+  } catch (e) {
+    showImportError('Die Sicherheitskopie vor dem Import konnte nicht angelegt werden (Speicher voll?). Der Import wurde abgebrochen, deine Daten sind unverändert.');
+    return;
+  }
+  /* 2. Schreiben */
+  try {
+    localStorage.setItem(STORAGE_KEY, JSON.stringify(incoming));
+  } catch (e) {
+    showImportError('Das Speichern des Backups ist fehlgeschlagen (Speicher voll?). Deine bisherigen Daten sind unverändert.');
+    return;
+  }
+  /* 3. Integritätsprüfung: zurücklesen und erneut prüfen */
+  let check = null;
+  try { check = JSON.parse(localStorage.getItem(STORAGE_KEY)); } catch (e) { check = null; }
+  const cv = check ? validateBackupState(check) : { ok: false };
+  if (!cv.ok) {
+    try { localStorage.setItem(STORAGE_KEY, localStorage.getItem(PREIMPORT_KEY)); } catch (e2) {}
+    showImportError('Die Prüfung nach dem Import ist fehlgeschlagen: dein vorheriger Stand wurde wiederhergestellt.');
+    return;
+  }
+  location.reload();
 }
 
 function resetPlans() {
@@ -1546,6 +1897,21 @@ function handleAction(action, el) {
     case 'import': document.getElementById('import-file').click(); break;
     case 'reset-plan': resetPlans(); break;
     case 'wipe-all': wipeAll(); break;
+    case 'export-csv': exportCsv(); break;
+    case 'import-confirm': confirmImport(); break;
+    case 'restore-preimport': {
+      const prev = localStorage.getItem(PREIMPORT_KEY);
+      if (!prev) { toast('Keine Vor-Import-Sicherung vorhanden.'); break; }
+      if (!confirm('Stand von vor dem letzten Import wiederherstellen? Der aktuelle Datenstand wird dabei ersetzt.')) break;
+      try {
+        localStorage.setItem(STORAGE_KEY, prev);
+      } catch (e) {
+        toast('Wiederherstellen fehlgeschlagen (Speicher voll?)');
+        break;
+      }
+      location.reload();
+      break;
+    }
     case 'ex-info': showExModal(el.dataset.name, el.dataset.reps || '8-10'); break;
     case 'swap-ex':
       openSwapChooser({ day: el.dataset.day, exId: el.dataset.exId, name: el.dataset.name, from: el.dataset.from || '' });
@@ -1560,7 +1926,7 @@ function handleAction(action, el) {
       swapExercise(el.dataset.day, el.dataset.exId, el.dataset.new);
       break;
     }
-    case 'close-modal': closeModal(); break;
+    case 'close-modal': closeModal(); pendingImport = null; break;
     case 'noop': break;
     case 'finish-close': closeOverlay(); break;
     case 'ob-next': {
