@@ -1,8 +1,11 @@
 'use strict';
 
 /* =====================================================
-   Mein Training · Trainingsplan-App für Dennis
+   Stemma · Training & Fortschritt
+   Trainingsplan-App mit Auto-Progression.
    Speichert alles lokal im Browser (localStorage).
+   Hinweis: Der Speicher-Schlüssel bleibt aus
+   Kompatibilitätsgründen "mein-training-v1".
    ===================================================== */
 
 const STORAGE_KEY = 'mein-training-v1';
@@ -1258,7 +1261,7 @@ function renderMehr() {
     '<p class="sub">🔒 Alle Daten bleiben nur auf deinem Gerät: kein Konto, keine Cloud, kein Tracking. Sichern kannst du sie über das Backup weiter oben.</p>' +
     '<p class="sub" style="margin-top:8px">⚕️ Trainings- und Kalorienangaben sind Orientierungshilfen, keine medizinische Beratung. Bei Schmerzen oder gesundheitlichen Problemen: Training abbrechen und ärztlich abklären lassen.</p>' +
     '</div>' +
-    '<p class="sub" style="text-align:center;margin-top:14px">Mein Training v6 · für Dennis 💪<br>Übungsfotos: free-exercise-db (Public Domain)</p>';
+    '<p class="sub" style="text-align:center;margin-top:14px">' + BRAND.name + ' ' + BRAND.version + ' · ' + BRAND.claim + ' 💪<br>Übungsfotos: free-exercise-db (Public Domain)</p>';
 }
 
 function setMode(mode) {

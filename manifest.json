@@ -1,7 +1,7 @@
 {
-  "name": "Mein Training",
-  "short_name": "Training",
-  "description": "Trainingsplan mit Auto-Progression, Aufwärmrampe und Übungsfotos",
+  "name": "Stemma – Training & Fortschritt",
+  "short_name": "Stemma",
+  "description": "Der geduldige Trainings-Coach: Plan, Aufwärmrampe, automatische Gewichts-Empfehlungen und Übungsfotos. Ohne Konto, alle Daten bleiben auf deinem Gerät.",
   "start_url": ".",
   "scope": ".",
   "display": "standalone",

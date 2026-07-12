@@ -1,7 +1,7 @@
 'use strict';
 
 /* =====================================================
-   coach.js · Trainings-Intelligenz für Mein Training
+   coach.js · Trainings-Intelligenz für Stemma
    Grundlage ist die Studienlage (Stand 2026):
    - Progression: Last um ~2-10% erhöhen, sobald 1-2 Wdh.
      über dem Ziel geschafft werden (ACSM Position Stand).

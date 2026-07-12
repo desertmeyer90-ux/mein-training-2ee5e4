@@ -1,6 +1,6 @@
 'use strict';
 
-/* Service Worker für Mein Training:
+/* Service Worker für Stemma (Cache-Name bleibt aus Kompatibilität "mein-training-…"):
    - Kern-Dateien und alle Übungsfotos werden beim Installieren
      heruntergeladen, damit die App im Gym auch OHNE Internet läuft.
    - Kern-Dateien: erst Netz versuchen (damit Updates ankommen),
