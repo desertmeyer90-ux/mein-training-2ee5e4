@@ -176,11 +176,21 @@ function defaultState() {
   return { mode: '3x', plans: defaultPlans(), logs: [], draft: null };
 }
 
+let corruptBackupMade = false;
+
 function loadState() {
   let s = null;
   try {
     s = JSON.parse(localStorage.getItem(STORAGE_KEY));
   } catch (e) {
+    /* Beschädigte Daten NICHT wegwerfen: Rohdaten sichern, dann frisch starten */
+    try {
+      const raw = localStorage.getItem(STORAGE_KEY);
+      if (raw) {
+        localStorage.setItem(STORAGE_KEY + '-defekt-' + Date.now(), raw);
+        corruptBackupMade = true;
+      }
+    } catch (e2) { /* Speicher voll: mehr geht nicht */ }
     s = null;
   }
   if (!s || typeof s !== 'object') s = defaultState();
@@ -1003,23 +1013,29 @@ function cancelWorkout() {
 let timerInterval = null;
 let timerLeft = 0;
 let timerTotal = 0;
+let timerEndAt = 0;
 let timerFinished = false;
+
+/* Zeitstempel-basiert: läuft auch korrekt weiter, wenn der Browser
+   den Tab drosselt (App-Wechsel, gesperrter Bildschirm). */
+function tickTimer() {
+  timerLeft = Math.max(0, Math.round((timerEndAt - Date.now()) / 1000));
+  if (timerLeft <= 0) {
+    stopTimer();
+    timerFinished = true;
+    if (navigator.vibrate && !prefersReducedMotion()) navigator.vibrate(300);
+  }
+  updateTimerUI();
+}
 
 function startTimer(sec) {
   stopTimer();
   timerFinished = false;
-  timerLeft = sec;
   timerTotal = sec;
+  timerEndAt = Date.now() + sec * 1000;
+  timerLeft = sec;
   updateTimerUI();
-  timerInterval = setInterval(function () {
-    timerLeft--;
-    if (timerLeft <= 0) {
-      stopTimer();
-      timerFinished = true;
-      if (navigator.vibrate) navigator.vibrate(300);
-    }
-    updateTimerUI();
-  }, 1000);
+  timerInterval = setInterval(tickTimer, 250);
 }
 
 function stopTimer() {
@@ -1031,6 +1047,7 @@ function resetTimer() {
   stopTimer();
   timerLeft = 0;
   timerTotal = 0;
+  timerEndAt = 0;
   timerFinished = false;
 }
 
@@ -1599,6 +1616,10 @@ function handleAction(action, el) {
       break;
     }
     case 'rerun-setup':
+      if (state.draft) {
+        toast('Bitte zuerst das laufende Training abschließen oder abbrechen.');
+        break;
+      }
       obStep = 0;
       obData = defaultObData();
       obData.goal = state.settings.goal;
@@ -1711,6 +1732,10 @@ function init() {
   });
 
   showView('heute');
+
+  if (corruptBackupMade) {
+    toast('⚠️ Gespeicherte Daten waren beschädigt: eine Rohdaten-Sicherung wurde angelegt.');
+  }
 
   if (!state.settings.onboarded) {
     obStep = 0;
