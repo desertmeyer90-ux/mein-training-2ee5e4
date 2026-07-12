@@ -1255,6 +1255,11 @@ function renderMehr() {
     '<p class="sub">Ziel, Trainingsort, Häufigkeit und Trainingstage neu festlegen.</p>' +
     '<button class="btn btn-ghost" data-action="rerun-setup" style="margin-top:10px">Einrichtung erneut öffnen</button>' +
     '</div>' +
+    '<div class="section-title">Beta & Feedback</div>' +
+    '<div class="card">' +
+    '<p class="sub">Stemma ist in einer Testphase. Fällt dir ein Fehler auf, schick eine kurze Nachricht: was du erwartet hast und was passiert ist. Die Technik-Infos helfen bei der Suche (sie enthalten keine Trainings- oder Körperdaten).</p>' +
+    '<button class="btn btn-ghost" data-action="diag-copy" style="margin-top:10px">Technik-Infos für Fehlerbericht anzeigen</button>' +
+    '</div>' +
     '<div class="section-title">Warum die App so tickt</div>' +
     '<div class="card">' +
     '<p class="sub">Die Empfehlungen kommen nicht aus dem Bauch, sondern aus Studien:</p>' +
@@ -1823,6 +1828,35 @@ function applyOnboarding(d) {
   toast('Alles eingerichtet. ' + BRAND.claim + ' 💪');
 }
 
+/* ===== Technik-Infos für Fehlerberichte (nur Geräte-/Versionsdaten) ===== */
+
+function buildDiagInfo() {
+  const standalone = !!(window.matchMedia && window.matchMedia('(display-mode: standalone)').matches) || (navigator.standalone === true);
+  return [
+    'Stemma ' + BRAND.version,
+    'Datenformat: v' + (state.version || CURRENT_DATA_VERSION),
+    'Installiert als App: ' + (standalone ? 'ja' : 'nein (Browser-Tab)'),
+    'Online: ' + (navigator.onLine ? 'ja' : 'nein'),
+    'Sprache: ' + (navigator.language || 'unbekannt'),
+    'Bildschirm: ' + window.screen.width + 'x' + window.screen.height,
+    'Browser: ' + navigator.userAgent
+  ].join('\n');
+}
+
+function showDiagModal() {
+  const root = document.getElementById('modal-root');
+  root.innerHTML =
+    '<div class="modal-backdrop" data-action="close-modal">' +
+    '<div class="modal-sheet" data-action="noop">' +
+    '<h3>Technik-Infos</h3>' +
+    '<p class="sub" style="margin-top:8px">Für Fehlerberichte: kopieren und in deine Nachricht einfügen. Enthält keine Trainings- oder Körperdaten.</p>' +
+    '<textarea class="diag-text" readonly rows="8">' + esc(buildDiagInfo()) + '</textarea>' +
+    '<button class="btn btn-primary" data-action="diag-clipboard" style="margin-top:12px">Kopieren</button>' +
+    '<button class="btn btn-ghost" data-action="close-modal" style="margin-top:10px">Schließen</button>' +
+    '</div></div>';
+  root.classList.add('open');
+}
+
 /* ===== Toast ===== */
 
 let toastTimeout = null;
@@ -1997,6 +2031,20 @@ function handleAction(action, el) {
       renderOnboarding();
       break;
     case 'timer-stop': resetTimer(); updateTimerUI(); break;
+    case 'diag-copy': showDiagModal(); break;
+    case 'diag-clipboard': {
+      const ta = document.querySelector('.diag-text');
+      if (!ta) break;
+      if (navigator.clipboard && navigator.clipboard.writeText) {
+        navigator.clipboard.writeText(ta.value)
+          .then(function () { toast('Kopiert ✓'); })
+          .catch(function () { ta.select(); toast('Bitte manuell kopieren (Text ist markiert)'); });
+      } else {
+        ta.select();
+        try { document.execCommand('copy'); toast('Kopiert ✓'); } catch (e) { toast('Bitte manuell kopieren'); }
+      }
+      break;
+    }
     case 'chart-ex': chartExName = el.dataset.name; chartSelIdx = null; renderVerlauf(); break;
     case 'chart-dot': chartSelIdx = parseInt(el.dataset.i, 10); renderVerlauf(); break;
     case 'toggle-autotimer':

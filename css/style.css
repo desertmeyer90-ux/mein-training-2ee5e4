@@ -996,6 +996,20 @@ select:focus-visible,
   .timer-fill { transition: none !important; }
 }
 
+/* ===== Technik-Infos (Beta) ===== */
+.diag-text {
+  width: 100%;
+  margin-top: 12px;
+  background: var(--card2);
+  border: 1px solid var(--border);
+  border-radius: 10px;
+  color: var(--text);
+  padding: 10px;
+  font-size: 12px;
+  font-family: Consolas, Menlo, monospace;
+  resize: none;
+}
+
 /* ===== iOS-PWA: Notch/Statusleiste freihalten ===== */
 .app-header { padding-top: calc(14px + env(safe-area-inset-top)); }
 .timer-bar { top: calc(54px + env(safe-area-inset-top)); }
