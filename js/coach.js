@@ -571,24 +571,38 @@ function chartSVG(pts, selIdx) {
   const W = 340, H = 170, padL = 38, padR = 14, padT = 16, padB = 24;
   const iw = W - padL - padR, ih = H - padT - padB;
   const ws = pts.map(function (p) { return p.w; });
-  let min = Math.min.apply(null, ws), max = Math.max.apply(null, ws);
-  if (min === max) { min -= 2.5; max += 2.5; }
-  const pad = (max - min) * 0.15;
-  min = Math.max(0, min - pad); max = max + pad;
+  let rawMin = Math.min.apply(null, ws), rawMax = Math.max.apply(null, ws);
+  if (rawMin === rawMax) { rawMin -= 2.5; rawMax += 2.5; }
+
+  /* Runde Achsen-Schritte (2,5-kg-Logik) statt krummer Zwischenwerte */
+  const stepsTry = [1.25, 2.5, 5, 10, 20, 25, 50, 100, 200];
+  let step = stepsTry[stepsTry.length - 1];
+  for (let si = 0; si < stepsTry.length; si++) {
+    if ((rawMax - rawMin) / stepsTry[si] <= 4) { step = stepsTry[si]; break; }
+  }
+  let min = Math.floor(rawMin / step) * step;
+  let max = Math.ceil(rawMax / step) * step;
+  if (max === rawMax) max += step / 2; /* etwas Luft über dem höchsten Punkt */
+  if (min < 0) min = 0;
+  if (max <= min) max = min + step;
 
   function x(i) { return padL + (pts.length === 1 ? iw / 2 : (i / (pts.length - 1)) * iw); }
   function y(v) { return padT + ih - ((v - min) / (max - min)) * ih; }
 
-  /* 3 ruhige Rasterlinien mit Beschriftung */
+  /* Ruhige Rasterlinien auf runden Werten */
   let grid = '';
-  for (let g = 0; g <= 2; g++) {
-    const v = min + ((max - min) * g) / 2;
+  for (let v = min; v <= max + 0.001; v += step) {
     const gy = y(v);
-    grid += '<line x1="' + padL + '" y1="' + gy + '" x2="' + (W - padR) + '" y2="' + gy + '" class="chart-grid"/>' +
-      '<text x="' + (padL - 6) + '" y="' + (gy + 3) + '" class="chart-tick" text-anchor="end">' + (Math.round(v * 2) / 2).toLocaleString('de-DE') + '</text>';
+    if (gy < padT - 1) continue;
+    grid += '<line x1="' + padL + '" y1="' + gy.toFixed(1) + '" x2="' + (W - padR) + '" y2="' + gy.toFixed(1) + '" class="chart-grid"/>' +
+      '<text x="' + (padL - 6) + '" y="' + (gy + 3).toFixed(1) + '" class="chart-tick" text-anchor="end">' + v.toLocaleString('de-DE') + '</text>';
   }
 
   const path = pts.map(function (p, i) { return (i === 0 ? 'M' : 'L') + x(i).toFixed(1) + ' ' + y(p.w).toFixed(1); }).join(' ');
+
+  /* Dezente Fläche unter der Linie */
+  const baseY = (padT + ih).toFixed(1);
+  const area = path + ' L' + x(pts.length - 1).toFixed(1) + ' ' + baseY + ' L' + x(0).toFixed(1) + ' ' + baseY + ' Z';
 
   let dots = '';
   pts.forEach(function (p, i) {
@@ -604,13 +618,18 @@ function chartSVG(pts, selIdx) {
     labels += '<text x="' + x(pts.length - 1).toFixed(1) + '" y="' + (y(lastP.w) - 10) + '" class="chart-label strong" text-anchor="end">' + fmtKg(lastP.w) + '</text>';
   }
 
-  /* X-Achse: erstes und letztes Datum */
+  /* X-Achse: erstes, mittleres und letztes Datum */
   function shortDate(iso) { return iso.slice(8, 10) + '.' + iso.slice(5, 7) + '.'; }
   let xlab = '<text x="' + padL + '" y="' + (H - 6) + '" class="chart-tick" text-anchor="start">' + shortDate(first.date) + '</text>';
+  if (pts.length >= 5) {
+    const mid = Math.floor((pts.length - 1) / 2);
+    xlab += '<text x="' + x(mid).toFixed(1) + '" y="' + (H - 6) + '" class="chart-tick" text-anchor="middle">' + shortDate(pts[mid].date) + '</text>';
+  }
   if (pts.length > 1) xlab += '<text x="' + (W - padR) + '" y="' + (H - 6) + '" class="chart-tick" text-anchor="end">' + shortDate(lastP.date) + '</text>';
 
   return '<svg viewBox="0 0 ' + W + ' ' + H + '" class="progress-chart" role="img" aria-label="Gewichtsverlauf">' +
     grid +
+    '<path d="' + area + '" class="chart-area"/>' +
     '<path d="' + path + '" class="chart-line" pathLength="1"/>' +
     dots + labels + xlab +
     '</svg>';

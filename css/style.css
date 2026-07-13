@@ -1010,6 +1010,123 @@ select:focus-visible,
   resize: none;
 }
 
+/* =====================================================
+   v7.3-ui: Auf-/Zuklappen, Wochen-Chart, Verlaufs-Politur,
+   Ruhetag-Karte, kompakter Plan, „Mehr" aufgeräumt
+   ===================================================== */
+
+/* Einklappbare Karten-Köpfe (Plan-Tage, Mehr-Bereiche) */
+.collapse-head {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  width: 100%;
+  background: none;
+  border: none;
+  color: var(--text);
+  padding: 0;
+  text-align: left;
+  cursor: pointer;
+  font-family: inherit;
+}
+.collapse-head .head-text { flex: 1; min-width: 0; }
+.collapse-head .col-title,
+.collapse-head .day-title { display: block; font-size: 1.02rem; font-weight: 700; }
+.collapse-head .day-sum { display: block; color: var(--muted); font-size: 0.78rem; margin-top: 2px; }
+.collapse-head .badge { flex-shrink: 0; }
+.chev {
+  color: var(--muted);
+  font-size: 0.9rem;
+  flex-shrink: 0;
+  transition: transform 0.2s ease;
+}
+.chev.open,
+[aria-expanded="true"] .chev { transform: rotate(180deg); }
+.collapse-body { margin-top: 12px; }
+.collapse-body.closed { display: none; }
+
+/* Plan: kompakte Übungszeilen */
+.plan-compact .plan-ex .grow { white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+.plan-compact .ex-thumb { width: 38px; min-width: 38px; }
+.plan-compact li { padding: 4px 0; }
+.btn-row .btn.small { width: auto; flex: 0 0 auto; }
+
+/* Heute: kleine Wochenbilanz + Ruhetag-Extras */
+.mini-stats {
+  display: grid;
+  grid-template-columns: repeat(3, 1fr);
+  gap: 8px;
+  margin-top: 12px;
+}
+.mini-stats > div {
+  background: var(--card2);
+  border: 1px solid var(--border);
+  border-radius: 12px;
+  padding: 8px 6px;
+  text-align: center;
+}
+.mini-stats .ms-num { display: block; font-weight: 800; font-size: 0.98rem; color: var(--accent); }
+.mini-stats .ms-lbl { display: block; font-size: 0.66rem; color: var(--muted); margin-top: 2px; }
+.rest-tip {
+  color: var(--muted);
+  font-size: 0.82rem;
+  line-height: 1.5;
+  margin-top: 12px;
+  padding: 9px 12px;
+  background: var(--card2);
+  border-radius: 10px;
+}
+.next-preview { margin-top: 12px; }
+.next-preview .more-line { color: var(--muted); font-size: 0.8rem; border-bottom: none; }
+
+/* Verlauf: Monatsgruppen, Farbpunkte, kompakte Statzeile */
+.month-title { margin-top: 22px; }
+.log-left { display: flex; align-items: center; gap: 10px; min-width: 0; }
+.log-right { display: flex; align-items: center; gap: 8px; flex-shrink: 0; }
+.pr-flag { font-size: 1rem; }
+.day-dot { width: 10px; height: 10px; min-width: 10px; border-radius: 50%; display: inline-block; }
+.day-dot.d0 { background: var(--accent); }
+.day-dot.d1 { background: #7aa0ff; }
+.day-dot.d2 { background: var(--success); }
+.day-dot.d3 { background: #d78cff; }
+.day-dot.d4 { background: #ffd166; }
+.log-stats { color: var(--muted); font-size: 0.8rem; margin-top: 8px; }
+
+/* Wochen-Chart (Balken) */
+.week-chart { width: 100%; height: auto; display: block; margin-top: 6px; }
+.wbar { fill: var(--accent); opacity: 0.88; }
+.wbar.full { fill: var(--success); }
+.wbar.paused { fill: #565e70; }
+.wbar.empty { fill: #565e70; opacity: 0.55; }
+.wbar.now { stroke: rgba(255, 255, 255, 0.35); stroke-width: 1; }
+.goal-dash { stroke: var(--muted); stroke-width: 1; stroke-dasharray: 4 4; }
+
+/* Übungs-Chart: Fläche + Trend */
+.chart-area { fill: var(--accent); opacity: 0.08; }
+.chart-trend { text-align: center; font-size: 0.8rem; font-weight: 700; margin: 0 0 4px; color: var(--muted); }
+.chart-trend.up { color: var(--success); }
+.chart-trend.down { color: #ff8a97; }
+
+/* Mehr: kompakte Modus-Zeilen + Gefahrenzone */
+.mode-row {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 10px;
+  padding: 10px 12px;
+  border: 1px solid var(--border);
+  border-radius: 12px;
+  background: var(--card2);
+}
+.mode-row + .mode-row { margin-top: 8px; }
+.mode-row.active { border-color: var(--accent); background: var(--accent-soft); box-shadow: none; }
+.mode-row h3 { font-size: 0.95rem; }
+.mode-row .sub { font-size: 0.78rem; margin-top: 2px; }
+.mode-row .check { flex-shrink: 0; }
+.mode-row .check.muted { color: var(--muted); font-weight: 600; font-size: 0.8rem; }
+.danger-zone { border-color: rgba(255, 85, 102, 0.35); }
+.danger-zone .col-title { color: var(--danger); }
+
 /* ===== iOS-PWA: Notch/Statusleiste freihalten ===== */
 .app-header { padding-top: calc(14px + env(safe-area-inset-top)); }
 .timer-bar { top: calc(54px + env(safe-area-inset-top)); }

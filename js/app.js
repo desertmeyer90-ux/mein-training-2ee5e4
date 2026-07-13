@@ -15,6 +15,17 @@ const PREIMPORT_KEY = STORAGE_KEY + '-vor-import';
 const MAX_IMPORT_BYTES = 10 * 1024 * 1024;
 const WEEKDAYS_SHORT = ['Mo', 'Di', 'Mi', 'Do', 'Fr', 'Sa', 'So'];
 const WEEKDAYS_LONG = ['Montag', 'Dienstag', 'Mittwoch', 'Donnerstag', 'Freitag', 'Samstag', 'Sonntag'];
+const MONTHS_LONG = ['Januar', 'Februar', 'März', 'April', 'Mai', 'Juni', 'Juli', 'August', 'September', 'Oktober', 'November', 'Dezember'];
+
+/* Ruhige Tipps für Ruhetage (rotieren nach Datum) */
+const REST_TIPS = [
+  '💤 Muskeln wachsen im Schlaf: heute lohnt sich Früh-ins-Bett besonders.',
+  '🥚 Eiweiß hilft beim Erholen: am besten über den Tag verteilt eine Portion pro Mahlzeit.',
+  '🚶 Ein lockerer Spaziergang fördert die Durchblutung und nimmt dem Muskelkater die Spitze.',
+  '💧 Viel trinken: auch Regeneration braucht Wasser.',
+  '🧘 5 Minuten lockeres Dehnen zählen heute mehr als jedes schwere Gewicht.',
+  '😌 Ruhetage sind Teil des Trainings: wer pausiert, wird stärker.'
+];
 
 /* ===== Kleine Helfer ===== */
 
@@ -432,6 +443,9 @@ let editingCopy = null;
 let expandedLogId = null;
 let chartExName = null;
 let chartSelIdx = null;
+let planOpenDayId = null;            /* null = automatisch (heutiger/nächster Tag), 'none' = alle zu */
+let weekChartMode = 'freq';          /* Wochen-Chart: 'freq' oder 'vol' */
+const mehrOpen = { wissen: false, schutz: false, gefahr: false }; /* eingeklappte Bereiche in „Mehr" */
 
 /* Bildschirm während des Trainings anlassen (Wake Lock) */
 let wakeLock = null;
@@ -531,6 +545,15 @@ function renderHeute() {
   const todayDay = plan.days.find(function (d) { return d.weekday === tIdx; });
   const logsToday = state.logs.filter(function (l) { return l.date === todayIso; });
 
+  /* Kleine Wochenbilanz (für Ruhetag- und Erledigt-Karte) */
+  const wk = weekQuickStats();
+  const wkStats =
+    '<div class="mini-stats">' +
+    '<div><span class="ms-num">' + wk.trainings + '</span><span class="ms-lbl">' + (wk.trainings === 1 ? 'Training' : 'Trainings') + '</span></div>' +
+    '<div><span class="ms-num">' + (wk.volume > 0 ? fmtVolume(wk.volume) : '0 kg') + '</span><span class="ms-lbl">bewegt</span></div>' +
+    '<div><span class="ms-num">' + (wk.kcal > 0 ? '~' + wk.kcal.toLocaleString('de-DE') : '0') + '</span><span class="ms-lbl">kcal</span></div>' +
+    '</div>';
+
   if (state.draft) {
     mainCard =
       '<div class="card highlight">' +
@@ -546,6 +569,7 @@ function renderHeute() {
       '<span class="badge green">✓ Erledigt</span>' +
       '<h2>Heute schon trainiert!</h2>' +
       '<p class="sub">' + names + ' ist im Verlauf gespeichert. Stark, dranbleiben!</p>' +
+      wkStats +
       '</div>';
   } else if (todayDay) {
     const preview = todayDay.exercises.map(function (e) {
@@ -569,11 +593,28 @@ function renderHeute() {
     const nextTxt = next
       ? 'Nächstes Training: <b>' + esc(dayTitle(next.day)) + '</b> am ' + WEEKDAYS_LONG[next.idx] + (next.offset === 1 ? ' (morgen)' : '') + '.'
       : 'Kein Trainingstag im Plan gefunden.';
+
+    /* Ruhetag sinnvoll füllen: Wochenbilanz, Blick aufs nächste Training, Erholungs-Tipp */
+    let nextPrev = '';
+    if (next) {
+      const firstThree = next.day.exercises.slice(0, 3).map(function (e) {
+        return '<li><span>' + esc(e.name) + '</span><span class="reps">' + e.sets + ' × ' + esc(e.reps) + '</span></li>';
+      }).join('');
+      const moreCount = next.day.exercises.length - 3;
+      const more = moreCount > 0 ? '<li class="more-line">+ ' + moreCount + ' weitere ' + (moreCount === 1 ? 'Übung' : 'Übungen') + '</li>' : '';
+      nextPrev =
+        '<ul class="ex-preview next-preview">' + firstThree + more + '</ul>' +
+        '<div class="btn-row"><button class="btn btn-ghost" data-action="goto-view" data-v="plan">Ganzen Plan ansehen</button></div>';
+    }
+    const tip = REST_TIPS[(parseInt(todayIso.slice(8, 10), 10) + parseInt(todayIso.slice(5, 7), 10)) % REST_TIPS.length];
     mainCard =
       '<div class="card">' +
       '<span class="badge">Ruhetag</span>' +
       '<h2>Heute ist Erholung dran 😌</h2>' +
       '<p class="sub">' + nextTxt + ' Erholung ist Teil des Plans: da wachsen die Muskeln.</p>' +
+      wkStats +
+      nextPrev +
+      '<p class="rest-tip">' + tip + '</p>' +
       '</div>';
   }
 
@@ -592,6 +633,19 @@ function renderHeute() {
 
 function renderPlan() {
   const plan = currentPlan();
+  const tIdx = dayIdx(new Date());
+
+  /* Standardmäßig ist der heutige Trainingstag offen, sonst der nächste */
+  let autoOpen = null;
+  const todayD = plan.days.find(function (d) { return d.weekday === tIdx; });
+  if (todayD) autoOpen = todayD.id;
+  for (let j = 1; j <= 7 && !autoOpen; j++) {
+    const idx = (tIdx + j) % 7;
+    const day = plan.days.find(function (d) { return d.weekday === idx; });
+    if (day) autoOpen = day.id;
+  }
+  const openId = planOpenDayId === null ? autoOpen : planOpenDayId;
+
   let html = '<div class="section-title">Dein Plan · ' + esc(plan.label) + '</div>';
 
   plan.days.forEach(function (day) {
@@ -599,9 +653,12 @@ function renderPlan() {
       html += renderDayEditor(editingCopy);
       return;
     }
+    const open = day.id === openId;
+    let totalSets = 0;
+    day.exercises.forEach(function (e) { totalSets += e.sets; });
     const rows = day.exercises.map(function (e) {
       const thumb = exImagesHtml(e.name, 'ex-thumb');
-      const kg = (typeof e.workWeight === 'number' && e.workWeight > 0) ? '<br><span class="kg">' + fmtKg(e.workWeight) + '</span>' : '';
+      const kg = (typeof e.workWeight === 'number' && e.workWeight > 0) ? ' <span class="kg">' + fmtKg(e.workWeight) + '</span>' : '';
       const swapBtn = exMuscle(e.name)
         ? '<button class="swap-btn" data-action="swap-ex" data-day="' + day.id + '" data-ex-id="' + e.id + '" data-name="' + esc(e.name) + '" title="Übung tauschen">⇄</button>'
         : '';
@@ -612,18 +669,24 @@ function renderPlan() {
         swapBtn + '</li>';
     }).join('');
     html +=
-      '<div class="card">' +
-      '<div class="card-top">' +
+      '<div class="card plan-day' + (open ? ' open' : '') + '">' +
+      '<button class="collapse-head" data-action="toggle-plan-day" data-day="' + day.id + '" aria-expanded="' + (open ? 'true' : 'false') + '">' +
       '<span class="badge">' + WEEKDAYS_LONG[day.weekday] + '</span>' +
+      '<span class="head-text"><span class="day-title">' + esc(dayTitle(day)) + '</span>' +
+      '<span class="day-sum">' + day.exercises.length + ' ' + (day.exercises.length === 1 ? 'Übung' : 'Übungen') + ' · ' + setsWord(totalSets) + '</span></span>' +
+      '<span class="chev">▾</span>' +
+      '</button>' +
+      '<div class="collapse-body' + (open ? '' : ' closed') + '">' +
+      '<ul class="ex-preview plan-compact">' + rows + '</ul>' +
+      '<div class="btn-row">' +
       '<button class="btn btn-ghost small" data-action="edit-day" data-day="' + day.id + '">✏️ Bearbeiten</button>' +
+      '<button class="btn btn-ghost" data-action="start-day" data-day="' + day.id + '">Starten</button>' +
       '</div>' +
-      '<h3>' + esc(dayTitle(day)) + '</h3>' +
-      '<ul class="ex-preview">' + rows + '</ul>' +
-      '<div class="btn-row"><button class="btn btn-ghost" data-action="start-day" data-day="' + day.id + '">Starten</button></div>' +
+      '</div>' +
       '</div>';
   });
 
-  html += '<p class="sub" style="margin:6px 4px 0">Tipp: Übung antippen zeigt die Ausführung mit Bild. Über „Bearbeiten" kannst du Übungen, Sätze, Wiederholungen, Arbeitsgewicht und den Wochentag anpassen.</p>';
+  html += '<p class="sub" style="margin:6px 4px 0">Tipp: Tag antippen klappt ihn auf. Übung antippen zeigt die Ausführung mit Bild. Über „Bearbeiten" kannst du Übungen, Sätze, Wiederholungen, Arbeitsgewicht und den Wochentag anpassen.</p>';
   document.getElementById('view-plan').innerHTML = html;
 }
 
@@ -1092,6 +1155,132 @@ function setsWord(n) {
   return n + (n === 1 ? ' Satz' : ' Sätze');
 }
 
+/* Kleine Bilanz der laufenden Woche (für die Heute-Karten) */
+function weekQuickStats() {
+  const mon = mondayOfCurrentWeek();
+  const sun = new Date(mon);
+  sun.setDate(mon.getDate() + 6);
+  const mi = isoOf(mon), si = isoOf(sun);
+  let volume = 0, kcal = 0;
+  const dates = {};
+  state.logs.forEach(function (l) {
+    if (l.date < mi || l.date > si) return;
+    volume += logStats(l).volume;
+    if (l.kcal) kcal += l.kcal;
+    dates[l.date] = true;
+  });
+  return { trainings: Object.keys(dates).length, volume: volume, kcal: Math.round(kcal) };
+}
+
+/* „vor 3 Tagen" statt nacktem Datum */
+function relDate(iso) {
+  const p = iso.split('-').map(Number);
+  const d = new Date(p[0], p[1] - 1, p[2]);
+  const t = new Date();
+  t.setHours(0, 0, 0, 0);
+  const diff = Math.round((t - d) / 86400000);
+  if (diff <= 0) return 'heute';
+  if (diff === 1) return 'gestern';
+  if (diff < 7) return 'vor ' + diff + ' Tagen';
+  if (diff < 30) {
+    const w = Math.round(diff / 7);
+    return 'vor ' + w + (w === 1 ? ' Woche' : ' Wochen');
+  }
+  const mo = Math.round(diff / 30);
+  return 'vor ' + mo + (mo === 1 ? ' Monat' : ' Monaten');
+}
+
+/* Stabile Farbe je Trainingstag (für den Punkt im Verlauf) */
+function dayColorIdx(log) {
+  const key = String(log.dayId || log.dayName || '?');
+  let h = 0;
+  for (let i = 0; i < key.length; i++) h = (h + key.charCodeAt(i)) % 997;
+  return h % 5;
+}
+
+/* Wochen-Daten der letzten n Wochen (für das Wochen-Chart) */
+function weekAgg(n) {
+  const mon0 = mondayOfCurrentWeek();
+  const paused = state.settings.pausedWeeks || [];
+  const out = [];
+  for (let i = n - 1; i >= 0; i--) {
+    const m = new Date(mon0);
+    m.setDate(mon0.getDate() - 7 * i);
+    const s = new Date(m);
+    s.setDate(m.getDate() + 6);
+    const mi = isoOf(m), si = isoOf(s);
+    let vol = 0;
+    const dates = {};
+    state.logs.forEach(function (l) {
+      if (l.date < mi || l.date > si) return;
+      vol += logStats(l).volume;
+      dates[l.date] = true;
+    });
+    out.push({
+      label: String(m.getDate()).padStart(2, '0') + '.' + String(m.getMonth() + 1).padStart(2, '0') + '.',
+      days: Object.keys(dates).length,
+      vol: vol,
+      paused: paused.indexOf(mi) !== -1,
+      current: i === 0
+    });
+  }
+  return out;
+}
+
+/* Balken-Chart: Trainings pro Woche bzw. Wochenvolumen */
+function weekBarsSVG(weeks, mode, target) {
+  const W = 340, H = 150, padL = 8, padR = 8, padT = 18, padB = 22;
+  const iw = W - padL - padR, ih = H - padT - padB;
+  const n = weeks.length;
+  const slot = iw / n;
+  const bw = Math.min(26, slot * 0.62);
+  let maxV = 0;
+  weeks.forEach(function (w) { maxV = Math.max(maxV, mode === 'freq' ? w.days : w.vol); });
+  if (mode === 'freq') maxV = Math.max(maxV, target);
+  if (maxV <= 0) maxV = 1;
+
+  function bx(i) { return padL + slot * i + (slot - bw) / 2; }
+
+  let goal = '';
+  if (mode === 'freq' && target > 0) {
+    const gy = padT + ih - (target / maxV) * ih;
+    goal = '<line x1="' + padL + '" y1="' + gy.toFixed(1) + '" x2="' + (W - padR) + '" y2="' + gy.toFixed(1) + '" class="goal-dash"/>';
+  }
+
+  let bars = '', tops = '', labels = '';
+  weeks.forEach(function (w, i) {
+    const v = mode === 'freq' ? w.days : w.vol;
+    const h = v <= 0 ? 0 : Math.max(3, (v / maxV) * ih);
+    const y = padT + ih - h;
+    let cls = 'wbar';
+    if (w.paused) cls += ' paused';
+    else if (mode === 'freq' && w.days >= target) cls += ' full';
+    if (w.current) cls += ' now';
+    if (v > 0) {
+      bars += '<rect x="' + bx(i).toFixed(1) + '" y="' + y.toFixed(1) + '" width="' + bw.toFixed(1) + '" height="' + h.toFixed(1) + '" rx="4" class="' + cls + '"/>';
+    } else {
+      bars += '<rect x="' + bx(i).toFixed(1) + '" y="' + (padT + ih - 2) + '" width="' + bw.toFixed(1) + '" height="2" rx="1" class="wbar empty"/>';
+    }
+    /* Wert über dem Balken: bei Volumen nur höchste und aktuelle Woche (sonst zu eng) */
+    const showTop = v > 0 && (mode === 'freq' || w.current || v === maxV);
+    if (showTop) {
+      const txt = mode === 'freq' ? String(w.days) : fmtVolume(w.vol);
+      tops += '<text x="' + (bx(i) + bw / 2).toFixed(1) + '" y="' + (y - 4).toFixed(1) + '" class="chart-label' + (w.current ? ' strong' : '') + '" text-anchor="middle">' + txt + '</text>';
+    }
+    if (w.paused) {
+      tops += '<text x="' + (bx(i) + bw / 2).toFixed(1) + '" y="' + (padT + ih - 6).toFixed(1) + '" class="chart-tick" text-anchor="middle">⏸</text>';
+    }
+    /* Datum unter jedem 2. Balken, die aktuelle Woche immer */
+    if (i % 2 === (n - 1) % 2) {
+      labels += '<text x="' + (bx(i) + bw / 2).toFixed(1) + '" y="' + (H - 6) + '" class="chart-tick" text-anchor="middle">' + w.label + '</text>';
+    }
+  });
+
+  return '<svg viewBox="0 0 ' + W + ' ' + H + '" class="week-chart" role="img" aria-label="' +
+    (mode === 'freq' ? 'Trainings pro Woche' : 'Bewegtes Gewicht pro Woche') + '">' +
+    goal + bars + tops + labels + '</svg>';
+}
+
 function renderVerlauf() {
   const view = document.getElementById('view-verlauf');
   const todayIso = todayISO();
@@ -1113,9 +1302,27 @@ function renderVerlauf() {
     '<div class="stat"><div class="num">' + weekCount + '/' + getWeeklyTarget() + '</div><div class="lbl">Diese Woche</div></div>' +
     '<div class="stat"><div class="num" data-count="' + monthCount + '">0</div><div class="lbl">Diesen Monat</div></div>' +
     (state.settings.showStreak ? '<div class="stat"><div class="num">' + (streak > 0 ? '🔥 ' + streak : '–') + '</div><div class="lbl">' + (streak === 1 ? 'Woche Serie' : 'Wochen Serie') + '</div></div>' : '<div class="stat"><div class="num">' + state.logs.filter(function (l) { return l.date.slice(0, 4) === todayIso.slice(0, 4); }).length + '</div><div class="lbl">Dieses Jahr</div></div>') +
-    '<div class="stat"><div class="num">' + (volume > 0 ? fmtVolume(volume) : '–') + '</div><div class="lbl">Gesamt gestemmt</div></div>' +
-    '<div class="stat"><div class="num" data-count="' + prs + '">' + (prs > 0 ? '0' : '–') + '</div><div class="lbl">Rekorde</div></div>' +
+    '<div class="stat"><div class="num">' + (volume > 0 ? fmtVolume(volume) : '0 kg') + '</div><div class="lbl">Gesamt gestemmt</div></div>' +
+    '<div class="stat"><div class="num" data-count="' + prs + '">0</div><div class="lbl">Rekorde</div></div>' +
     '</div>';
+
+  /* Wochen-Chart: Trainingshäufigkeit bzw. Volumen pro Woche */
+  if (state.logs.length > 0) {
+    const weeks = weekAgg(8);
+    const target = getWeeklyTarget();
+    html +=
+      '<div class="section-title">Woche für Woche</div>' +
+      '<div class="card chart-card">' +
+      '<div class="chip-row">' +
+      '<button class="chip' + (weekChartMode === 'freq' ? ' active' : '') + '" data-action="week-chart-mode" data-m="freq">Häufigkeit</button>' +
+      '<button class="chip' + (weekChartMode === 'vol' ? ' active' : '') + '" data-action="week-chart-mode" data-m="vol">Volumen</button>' +
+      '</div>' +
+      weekBarsSVG(weeks, weekChartMode, target) +
+      '<p class="chart-info">' + (weekChartMode === 'freq'
+        ? 'Balken = Trainingstage pro Woche · gestrichelte Linie = dein Wochenziel (' + target + '×)'
+        : 'Balken = bewegtes Gesamtgewicht pro Woche (Gewicht × Wiederholungen)') + '</p>' +
+      '</div>';
+  }
 
   /* Fortschritts-Chart pro Übung */
   const namesInPlan = [];
@@ -1142,10 +1349,21 @@ function renderVerlauf() {
     const chart = pts.length >= 2
       ? chartSVG(pts, chartSelIdx)
       : '<p class="sub" style="margin:8px 0">Noch zu wenig Daten: ab dem 2. Training siehst du hier deine Kurve. 📈</p>';
+
+    /* Trend seit dem ersten Datenpunkt */
+    let trend = '';
+    if (pts.length >= 2) {
+      const diff = Math.round((pts[pts.length - 1].w - pts[0].w) * 100) / 100;
+      const startD = pts[0].date.slice(8, 10) + '.' + pts[0].date.slice(5, 7) + '.';
+      if (diff > 0) trend = '<p class="chart-trend up">▲ +' + fmtKg(diff) + ' seit ' + startD + '</p>';
+      else if (diff < 0) trend = '<p class="chart-trend down">▼ ' + fmtKg(diff) + ' seit ' + startD + '</p>';
+      else trend = '<p class="chart-trend">► gehalten seit ' + startD + '</p>';
+    }
     html +=
       '<div class="section-title">Fortschritt pro Übung</div>' +
       '<div class="card chart-card">' +
       '<div class="chip-row chart-chips">' + chips + '</div>' +
+      trend +
       chart +
       (infoLine ? '<p class="chart-info">' + infoLine + ' · Punkt antippen für Details</p>' : '') +
       '</div>';
@@ -1157,9 +1375,16 @@ function renderVerlauf() {
     html += '<div class="card"><p class="sub">Noch keine Trainings gespeichert. Dein erstes Training wartet auf dem „Heute"-Tab! 🔥</p></div>';
   } else {
     const sorted = state.logs.slice().reverse();
+    let lastMonth = '';
     sorted.forEach(function (log) {
       const st = logStats(log);
       const open = expandedLogId === log.id;
+      const mKey = log.date.slice(0, 7);
+      if (mKey !== lastMonth) {
+        lastMonth = mKey;
+        html += '<div class="section-title month-title">' + MONTHS_LONG[parseInt(log.date.slice(5, 7), 10) - 1] + ' ' + log.date.slice(0, 4) + '</div>';
+      }
+      const hasPR = Array.isArray(log.results) && log.results.some(function (r) { return r.isPR; });
       let details = '';
       if (open) {
         const lines = log.entries.map(function (e) {
@@ -1185,15 +1410,20 @@ function renderVerlauf() {
           '<div class="log-actions"><button class="btn btn-danger-ghost small" data-action="del-log" data-log="' + log.id + '">Eintrag löschen</button></div>' +
           '</div>';
       }
+      const statBits = [];
+      if (log.durationMin) statBits.push('⏱ ' + fmtDuration(log.durationMin));
+      if (st.volume > 0) statBits.push(fmtVolume(st.volume) + ' bewegt');
+      if (log.kcal > 0) statBits.push('~' + log.kcal.toLocaleString('de-DE') + ' kcal');
+      statBits.push(setsWord(st.sets));
       html +=
         '<div class="card log-item" data-action="toggle-log" data-log="' + log.id + '">' +
         '<div class="log-summary">' +
-        '<div><h3>' + esc(log.dayName) + '</h3><p class="sub">' + fmtDate(log.date) + '</p></div>' +
-        '<div class="sub" style="text-align:right">' + setsWord(st.sets) +
-        (st.volume > 0 ? '<br>' + st.volume.toLocaleString('de-DE') + ' kg bewegt' : '') +
-        (log.durationMin ? '<br>' + fmtDuration(log.durationMin) + (log.kcal > 0 ? ' · ~' + log.kcal.toLocaleString('de-DE') + ' kcal' : '') : '') +
+        '<div class="log-left"><span class="day-dot d' + dayColorIdx(log) + '"></span>' +
+        '<div><h3>' + esc(log.dayName) + '</h3><p class="sub">' + fmtDate(log.date) + ' · ' + relDate(log.date) + '</p></div></div>' +
+        '<div class="log-right">' + (hasPR ? '<span class="pr-flag" title="Mit Rekord">🏆</span>' : '') +
+        '<span class="chev' + (open ? ' open' : '') + '">▾</span></div>' +
         '</div>' +
-        '</div>' +
+        '<p class="log-stats">' + statBits.join(' · ') + '</p>' +
         details +
         '</div>';
     });
@@ -1201,67 +1431,41 @@ function renderVerlauf() {
 
   view.innerHTML = html;
   view.querySelectorAll('.stat .num[data-count]').forEach(animateCount);
+
+  /* Aktives Übungs-Chip in den Sichtbereich holen (bei vielen Übungen) */
+  const activeChip = view.querySelector('.chart-chips .chip.active');
+  if (activeChip && activeChip.scrollIntoView) {
+    activeChip.scrollIntoView({ block: 'nearest', inline: 'center' });
+  }
 }
 
 /* ===== Ansicht: Mehr ===== */
 
 function renderMehr() {
   const view = document.getElementById('view-mehr');
-  const modeCard = function (mode, title, desc) {
+  const isPaused = (state.settings.pausedWeeks || []).indexOf(isoOf(mondayOfCurrentWeek())) !== -1;
+
+  const modeRow = function (mode, title, desc) {
     const active = state.mode === mode;
-    return '<div class="card mode-card' + (active ? ' active' : '') + '" data-action="set-mode" data-mode="' + mode + '">' +
-      '<div class="card-top"><h3>' + title + '</h3>' + (active ? '<span class="check">✓ Aktiv</span>' : '') + '</div>' +
-      '<p class="sub">' + desc + '</p>' +
+    return '<div class="mode-card mode-row' + (active ? ' active' : '') + '" data-action="set-mode" data-mode="' + mode + '" role="button" tabindex="0">' +
+      '<div class="mode-text"><h3>' + title + '</h3><p class="sub">' + desc + '</p></div>' +
+      (active ? '<span class="check">✓ Aktiv</span>' : '<span class="check muted">wählen</span>') +
       '</div>';
   };
 
-  view.innerHTML =
-    '<div class="section-title">Trainings-Modus</div>' +
-    modeCard('3x', 'Ganzkörper-Split (3 Tage)', 'Tag A (Brust & Druck), Tag B (Rücken & Zug), Tag C (Beine & Core). Ideal für Einstieg und Wiedereinstieg. Wochentage stellst du im Plan-Editor ein.') +
-    modeCard('5x', '5er-Split (5 Tage)', 'Push / Pull / Beine / Oberkörper / Unterkörper. Für später, wenn der Ganzkörper-Plan locker läuft.') +
-    '<p class="sub" style="margin:0 4px 6px">Beide Pläne bleiben gespeichert, dein Verlauf geht beim Umschalten nicht verloren.</p>' +
-    '<div class="section-title">Training</div>' +
-    '<div class="card">' +
-    '<div class="switch-row" data-action="toggle-autotimer">' +
-    '<div><h3>Auto-Pause-Timer</h3><p class="sub">Nach jedem abgehakten Satz startet die Pause von allein (Grundübung 2,5 Min, kleine Übung 90 s, Aufwärmsatz 60 s).</p></div>' +
-    '<span class="switch' + (state.settings.autoTimer ? ' on' : '') + '"></span>' +
-    '</div>' +
-    '<p class="sub" style="margin-top:10px">📱 Während eines Trainings bleibt der Bildschirm automatisch an (wenn dein Handy das unterstützt).</p>' +
-    '</div>' +
-    '<div class="card">' +
-    '<div class="switch-row" style="cursor:default">' +
-    '<div><h3>Dein Körpergewicht</h3><p class="sub">Grundlage für die Kalorien-Schätzung. Aktualisiere es ab und zu, wenn du abnimmst.</p></div>' +
-    '<span class="bw-wrap"><input type="number" class="bw-input" min="40" max="300" step="0.5" value="' + state.settings.bodyWeight + '" data-setting-field="bodyWeight"> kg</span>' +
-    '</div></div>' +
-    '<div class="card">' +
-    '<h3>Wochenziel</h3>' +
-    '<p class="sub">Wie viele Trainings pro Woche zählen für dich als „geschafft"? Zählt für Fortschritt und Serie.</p>' +
-    '<div class="chip-row" style="margin-top:10px">' + [2, 3, 4, 5, 6].map(function (n) {
-      return '<button class="chip' + (getWeeklyTarget() === n ? ' active' : '') + '" data-action="set-target" data-v="' + n + '">' + n + '×</button>';
-    }).join('') + '</div>' +
-    '</div>' +
-    '<div class="card">' +
-    '<div class="switch-row" data-action="toggle-streak">' +
-    '<div><h3>Wochen-Serie anzeigen</h3><p class="sub">Motiviert dich die 🔥-Serie nicht? Dann blende sie einfach aus.</p></div>' +
-    '<span class="switch' + (state.settings.showStreak ? ' on' : '') + '"></span>' +
-    '</div>' +
-    '<button class="btn btn-ghost" data-action="toggle-pause" style="margin-top:12px">' +
-    ((state.settings.pausedWeeks || []).indexOf(isoOf(mondayOfCurrentWeek())) !== -1 ? '⏸ Pause für diese Woche aufheben' : '⏸ Diese Woche pausieren (Urlaub / krank)') +
-    '</button>' +
-    '<p class="sub" style="margin-top:8px">Pausenwochen unterbrechen deine Serie nicht. Erholung gehört dazu.</p>' +
-    '</div>' +
-    '<div class="card">' +
-    '<h3>Einrichtung</h3>' +
-    '<p class="sub">Ziel, Trainingsort, Häufigkeit und Trainingstage neu festlegen.</p>' +
-    '<button class="btn btn-ghost" data-action="rerun-setup" style="margin-top:10px">Einrichtung erneut öffnen</button>' +
-    '</div>' +
-    '<div class="section-title">Beta & Feedback</div>' +
-    '<div class="card">' +
-    '<p class="sub">Stemma ist in einer Testphase. Fällt dir ein Fehler auf, schick eine kurze Nachricht: was du erwartet hast und was passiert ist. Die Technik-Infos helfen bei der Suche (sie enthalten keine Trainings- oder Körperdaten).</p>' +
-    '<button class="btn btn-ghost" data-action="diag-copy" style="margin-top:10px">Technik-Infos für Fehlerbericht anzeigen</button>' +
-    '</div>' +
-    '<div class="section-title">Warum die App so tickt</div>' +
-    '<div class="card">' +
+  /* Einklappbarer Bereich: Inhalt bleibt im DOM, wird nur ausgeblendet */
+  const collapse = function (key, title, body, danger) {
+    const open = !!mehrOpen[key];
+    return '<div class="card' + (danger ? ' danger-zone' : '') + '">' +
+      '<button class="collapse-head" data-action="toggle-more-sec" data-sec="' + key + '" aria-expanded="' + (open ? 'true' : 'false') + '">' +
+      '<span class="head-text"><span class="col-title">' + title + '</span></span>' +
+      '<span class="chev">▾</span>' +
+      '</button>' +
+      '<div class="collapse-body' + (open ? '' : ' closed') + '">' + body + '</div>' +
+      '</div>';
+  };
+
+  const wissenBody =
     '<p class="sub">Die Empfehlungen kommen nicht aus dem Bauch, sondern aus Studien:</p>' +
     '<ul class="science-list">' +
     '<li><b>Nah ans Limit:</b> Muskeln wachsen am besten, wenn die letzten 1-2 Wiederholungen wirklich schwer sind (Meta-Analyse von Robinson und Kollegen, 2023).</li>' +
@@ -1269,8 +1473,50 @@ function renderMehr() {
     '<li><b>Aufwärmen:</b> Leichte Aufwärmsätze mit ca. 40% und 80% des Arbeitsgewichts machen die schweren Sätze messbar besser (Studien zu Bankdrücken und Kniebeugen).</li>' +
     '<li><b>Pause:</b> 2-3 Minuten zwischen schweren Sätzen bringen mehr Kraft und Muskeln als 1 Minute (Schoenfeld und Kollegen, 2016).</li>' +
     '<li><b>Kalorien:</b> grobe Schätzung über MET-Werte aus dem Kompendium körperlicher Aktivitäten (Krafttraining ~3,5 MET, Cardio je nach Gerät), gerechnet mit deinem Körpergewicht. Als Orientierung gedacht, nicht als Messung.</li>' +
-    '</ul></div>' +
-    '<div class="section-title">Daten</div>' +
+    '</ul>';
+
+  const schutzBody =
+    '<p class="sub">🔒 Alle Daten bleiben nur auf deinem Gerät: kein Konto, keine Cloud, kein Tracking. Sichern kannst du sie über das Backup weiter oben.</p>' +
+    '<p class="sub" style="margin-top:8px">⚕️ Trainings- und Kalorienangaben sind Orientierungshilfen, keine medizinische Beratung. Bei Schmerzen oder gesundheitlichen Problemen: Training abbrechen und ärztlich abklären lassen.</p>';
+
+  const gefahrBody =
+    '<p class="sub">Vorsicht: Diese Aktionen lassen sich nicht rückgängig machen. Vorher am besten ein Backup speichern.</p>' +
+    '<button class="btn btn-ghost" data-action="reset-plan" style="margin-top:10px">Pläne auf Standard zurücksetzen</button>' +
+    '<button class="btn btn-danger-ghost" data-action="wipe-all" style="margin-top:10px">Alle Daten löschen</button>';
+
+  view.innerHTML =
+    /* 1) Woche & Ziele */
+    '<div class="section-title">Woche & Ziele</div>' +
+    '<div class="card">' +
+    '<h3>Wochenziel</h3>' +
+    '<p class="sub">Wie viele Trainings pro Woche zählen für dich als „geschafft"? Zählt für Fortschritt und Serie.</p>' +
+    '<div class="chip-row" style="margin-top:10px">' + [2, 3, 4, 5, 6].map(function (n) {
+      return '<button class="chip' + (getWeeklyTarget() === n ? ' active' : '') + '" data-action="set-target" data-v="' + n + '">' + n + '×</button>';
+    }).join('') + '</div>' +
+    '<div class="switch-row" data-action="toggle-streak" style="margin-top:16px">' +
+    '<div><h3>Wochen-Serie anzeigen</h3><p class="sub">Motiviert dich die 🔥-Serie nicht? Dann blende sie einfach aus.</p></div>' +
+    '<span class="switch' + (state.settings.showStreak ? ' on' : '') + '"></span>' +
+    '</div>' +
+    '<button class="btn btn-ghost" data-action="toggle-pause" style="margin-top:12px">' +
+    (isPaused ? '⏸ Pause für diese Woche aufheben' : '⏸ Diese Woche pausieren (Urlaub / krank)') +
+    '</button>' +
+    '<p class="sub" style="margin-top:8px">Pausenwochen unterbrechen deine Serie nicht. Erholung gehört dazu.</p>' +
+    '</div>' +
+    /* 2) Training */
+    '<div class="section-title">Training</div>' +
+    '<div class="card">' +
+    '<div class="switch-row" data-action="toggle-autotimer">' +
+    '<div><h3>Auto-Pause-Timer</h3><p class="sub">Nach jedem abgehakten Satz startet die Pause von allein (Grundübung 2,5 Min, kleine Übung 90 s, Aufwärmsatz 60 s).</p></div>' +
+    '<span class="switch' + (state.settings.autoTimer ? ' on' : '') + '"></span>' +
+    '</div>' +
+    '<p class="sub" style="margin-top:10px">📱 Während eines Trainings bleibt der Bildschirm automatisch an (wenn dein Handy das unterstützt).</p>' +
+    '<div class="switch-row" style="cursor:default;margin-top:16px">' +
+    '<div><h3>Dein Körpergewicht</h3><p class="sub">Grundlage für die Kalorien-Schätzung. Aktualisiere es ab und zu, wenn du abnimmst.</p></div>' +
+    '<span class="bw-wrap"><input type="number" class="bw-input" min="40" max="300" step="0.5" value="' + state.settings.bodyWeight + '" data-setting-field="bodyWeight"> kg</span>' +
+    '</div>' +
+    '</div>' +
+    /* 3) Daten & Backup (bewusst weit oben) */
+    '<div class="section-title">Daten & Backup</div>' +
     '<div class="card">' +
     '<p class="sub"><b>Wichtig zu wissen:</b> Deine Daten leben nur in diesem Browser auf diesem Gerät. Wenn du Browser-Daten löschst oder das Gerät wechselst, sind sie ohne Backup weg. Sichere dir deshalb regelmäßig ein Backup, zum Beispiel einmal pro Woche.</p>' +
     '<div class="btn-row" style="margin-top:12px">' +
@@ -1280,15 +1526,30 @@ function renderMehr() {
     '<button class="btn btn-ghost" data-action="export-csv" style="margin-top:10px">Trainings als CSV exportieren (für Excel)</button>' +
     (localStorage.getItem(PREIMPORT_KEY) ? '<button class="btn btn-ghost" data-action="restore-preimport" style="margin-top:10px">Stand von vor dem letzten Import wiederherstellen</button>' : '') +
     '</div>' +
+    /* 4) Trainings-Modus (kompakt) */
+    '<div class="section-title">Trainings-Modus</div>' +
     '<div class="card">' +
-    '<button class="btn btn-ghost" data-action="reset-plan">Pläne auf Standard zurücksetzen</button>' +
-    '<button class="btn btn-danger-ghost" data-action="wipe-all" style="margin-top:10px">Alle Daten löschen</button>' +
+    modeRow('3x', 'Ganzkörper-Split (3 Tage)', 'Tag A (Brust & Druck), Tag B (Rücken & Zug), Tag C (Beine & Core). Ideal für Einstieg und Wiedereinstieg.') +
+    modeRow('5x', '5er-Split (5 Tage)', 'Push / Pull / Beine / Oberkörper / Unterkörper. Für später, wenn der Ganzkörper-Plan locker läuft.') +
+    '<p class="sub" style="margin-top:10px">Beide Pläne bleiben gespeichert, dein Verlauf geht beim Umschalten nicht verloren. Wochentage stellst du im Plan-Editor ein.</p>' +
     '</div>' +
-    '<div class="section-title">Datenschutz & Hinweis</div>' +
+    /* 5) Einrichtung */
     '<div class="card">' +
-    '<p class="sub">🔒 Alle Daten bleiben nur auf deinem Gerät: kein Konto, keine Cloud, kein Tracking. Sichern kannst du sie über das Backup weiter oben.</p>' +
-    '<p class="sub" style="margin-top:8px">⚕️ Trainings- und Kalorienangaben sind Orientierungshilfen, keine medizinische Beratung. Bei Schmerzen oder gesundheitlichen Problemen: Training abbrechen und ärztlich abklären lassen.</p>' +
+    '<h3>Einrichtung</h3>' +
+    '<p class="sub">Ziel, Trainingsort, Häufigkeit und Trainingstage neu festlegen.</p>' +
+    '<button class="btn btn-ghost" data-action="rerun-setup" style="margin-top:10px">Einrichtung erneut öffnen</button>' +
     '</div>' +
+    /* 6) Beta & Feedback */
+    '<div class="section-title">Beta & Feedback</div>' +
+    '<div class="card">' +
+    '<p class="sub">Stemma ist in einer Testphase. Fällt dir ein Fehler auf, schick eine kurze Nachricht: was du erwartet hast und was passiert ist. Die Technik-Infos helfen bei der Suche (sie enthalten keine Trainings- oder Körperdaten).</p>' +
+    '<button class="btn btn-ghost" data-action="diag-copy" style="margin-top:10px">Technik-Infos für Fehlerbericht anzeigen</button>' +
+    '</div>' +
+    /* 7) Eingeklappte Bereiche */
+    '<div class="section-title">Mehr Infos</div>' +
+    collapse('wissen', '📚 Warum die App so tickt', wissenBody) +
+    collapse('schutz', '🔒 Datenschutz & Hinweis', schutzBody) +
+    collapse('gefahr', '⚠️ Gefahrenzone', gefahrBody, true) +
     '<p class="sub" style="text-align:center;margin-top:14px">' + BRAND.name + ' ' + BRAND.version + ' · ' + BRAND.claim + ' 💪<br>Übungsfotos: free-exercise-db (Public Domain)</p>';
 }
 
@@ -2047,6 +2308,16 @@ function handleAction(action, el) {
     }
     case 'chart-ex': chartExName = el.dataset.name; chartSelIdx = null; renderVerlauf(); break;
     case 'chart-dot': chartSelIdx = parseInt(el.dataset.i, 10); renderVerlauf(); break;
+    case 'week-chart-mode': weekChartMode = el.dataset.m; renderVerlauf(); break;
+    case 'toggle-plan-day':
+      planOpenDayId = el.getAttribute('aria-expanded') === 'true' ? 'none' : el.dataset.day;
+      renderPlan();
+      break;
+    case 'toggle-more-sec':
+      mehrOpen[el.dataset.sec] = !mehrOpen[el.dataset.sec];
+      renderMehr();
+      break;
+    case 'goto-view': showView(el.dataset.v); break;
     case 'toggle-autotimer':
       state.settings.autoTimer = !state.settings.autoTimer;
       saveState();
