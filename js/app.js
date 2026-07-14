@@ -224,6 +224,7 @@ function loadState() {
   if (typeof s.version !== 'number') s.version = 1;
   if (!s.settings || typeof s.settings !== 'object') s.settings = {};
   if (typeof s.settings.autoTimer !== 'boolean') s.settings.autoTimer = true;
+  if (typeof s.settings.timerSound !== 'boolean') s.settings.timerSound = true;
   if (typeof s.settings.bodyWeight !== 'number' || isNaN(s.settings.bodyWeight)) s.settings.bodyWeight = 80;
   if (typeof s.settings.onboarded !== 'boolean') s.settings.onboarded = false;
   ['3x', '5x'].forEach(function (k) {
@@ -1083,14 +1084,60 @@ let timerTotal = 0;
 let timerEndAt = 0;
 let timerFinished = false;
 
+/* Signalton am Pausen-Ende (Web Audio, ohne Sound-Datei).
+   iOS erlaubt Ton erst nach einer Nutzer-Interaktion: unlockAudio()
+   wird deshalb bei Klicks aufgerufen und weckt den Audio-Kontext. */
+let audioCtx = null;
+
+function unlockAudio() {
+  if (!state || !state.settings || !state.settings.timerSound) return;
+  const AC = window.AudioContext || window.webkitAudioContext;
+  if (!AC) return;
+  try {
+    if (!audioCtx) audioCtx = new AC();
+    if (audioCtx.state === 'suspended') audioCtx.resume().catch(function () {});
+  } catch (e) { /* Ton ist nie kritisch */ }
+}
+
+function playTimerSound() {
+  if (!state.settings.timerSound || !audioCtx || audioCtx.state !== 'running') return;
+  try {
+    const now = audioCtx.currentTime;
+    [0, 0.22, 0.44].forEach(function (t, i) {
+      const o = audioCtx.createOscillator();
+      const g = audioCtx.createGain();
+      o.type = 'sine';
+      o.frequency.value = i === 2 ? 1175 : 880; /* zweimal A5, dann D6: freundliches „fertig!" */
+      g.gain.setValueAtTime(0.0001, now + t);
+      g.gain.exponentialRampToValueAtTime(0.4, now + t + 0.02);
+      g.gain.exponentialRampToValueAtTime(0.0001, now + t + 0.18);
+      o.connect(g);
+      g.connect(audioCtx.destination);
+      o.start(now + t);
+      o.stop(now + t + 0.2);
+    });
+  } catch (e) { /* Ton ist nie kritisch */ }
+}
+
+function flashTimerBar() {
+  const bar = document.querySelector('.timer-bar');
+  if (!bar) return;
+  bar.classList.add('done-flash');
+  setTimeout(function () { bar.classList.remove('done-flash'); }, 2000);
+}
+
 /* Zeitstempel-basiert: läuft auch korrekt weiter, wenn der Browser
    den Tab drosselt (App-Wechsel, gesperrter Bildschirm). */
 function tickTimer() {
   timerLeft = Math.max(0, Math.round((timerEndAt - Date.now()) / 1000));
   if (timerLeft <= 0) {
     stopTimer();
-    timerFinished = true;
-    if (navigator.vibrate && !prefersReducedMotion()) navigator.vibrate(300);
+    if (!timerFinished) {
+      timerFinished = true;
+      if (navigator.vibrate && !prefersReducedMotion()) navigator.vibrate(300);
+      playTimerSound();
+      flashTimerBar();
+    }
   }
   updateTimerUI();
 }
@@ -1510,6 +1557,10 @@ function renderMehr() {
     '<span class="switch' + (state.settings.autoTimer ? ' on' : '') + '"></span>' +
     '</div>' +
     '<p class="sub" style="margin-top:10px">📱 Während eines Trainings bleibt der Bildschirm automatisch an (wenn dein Handy das unterstützt).</p>' +
+    '<div class="switch-row" data-action="toggle-timersound" style="margin-top:16px">' +
+    '<div><h3>Ton am Pausen-Ende</h3><p class="sub">Kurzer Signalton, wenn die Pause vorbei ist. Klappt nur, wenn dein Handy nicht stummgeschaltet ist.</p></div>' +
+    '<span class="switch' + (state.settings.timerSound ? ' on' : '') + '"></span>' +
+    '</div>' +
     '<div class="switch-row" style="cursor:default;margin-top:16px">' +
     '<div><h3>Dein Körpergewicht</h3><p class="sub">Grundlage für die Kalorien-Schätzung. Aktualisiere es ab und zu, wenn du abnimmst.</p></div>' +
     '<span class="bw-wrap"><input type="number" class="bw-input" min="40" max="300" step="0.5" value="' + state.settings.bodyWeight + '" data-setting-field="bodyWeight"> kg</span>' +
@@ -1786,6 +1837,7 @@ function sanitizeSettings(s) {
   s = (s && typeof s === 'object') ? s : {};
   return {
     autoTimer: s.autoTimer !== false,
+    timerSound: s.timerSound !== false,
     bodyWeight: (typeof s.bodyWeight === 'number' && s.bodyWeight >= 40 && s.bodyWeight <= 300) ? s.bodyWeight : 80,
     onboarded: s.onboarded === true,
     weeklyTarget: clampInt(s.weeklyTarget, 1, 7, 3),
@@ -2324,6 +2376,18 @@ function handleAction(action, el) {
       renderMehr();
       toast(state.settings.autoTimer ? 'Auto-Timer an ⏱️' : 'Auto-Timer aus');
       break;
+    case 'toggle-timersound':
+      state.settings.timerSound = !state.settings.timerSound;
+      saveState();
+      renderMehr();
+      if (state.settings.timerSound) {
+        unlockAudio();
+        setTimeout(playTimerSound, 150); /* kurze Hörprobe */
+        toast('Ton am Pausen-Ende an 🔔');
+      } else {
+        toast('Ton am Pausen-Ende aus');
+      }
+      break;
   }
 }
 
@@ -2343,6 +2407,7 @@ function init() {
 
   /* Klicks (Delegation, auch für Modal/Overlay): innerste data-action gewinnt */
   document.addEventListener('click', function (e) {
+    unlockAudio(); /* iOS: Audio-Kontext braucht eine Nutzer-Interaktion */
     const el = e.target.closest('[data-action]');
     if (!el) return;
     /* Buttons in Log-Karten nicht doppelt auslösen */
@@ -2411,9 +2476,16 @@ function init() {
     e.target.value = '';
   });
 
-  /* Wake Lock nach App-Wechsel wiederherstellen */
+  /* Wake Lock nach App-Wechsel wiederherstellen + Nachhol-Hinweis,
+     wenn die Pause im Hintergrund abgelaufen ist */
   document.addEventListener('visibilitychange', function () {
-    if (document.visibilityState === 'visible' && currentView === 'workout') acquireWakeLock();
+    if (document.visibilityState !== 'visible' || currentView !== 'workout') return;
+    acquireWakeLock();
+    if (audioCtx && audioCtx.state === 'suspended') audioCtx.resume().catch(function () {});
+    if (timerEndAt > 0 && !timerFinished && Date.now() >= timerEndAt) {
+      tickTimer(); /* löst Ton + Aufblinken aus */
+      toast('⏱ Pause ist um: weiter geht’s!');
+    }
   });
 
   showView('heute');
