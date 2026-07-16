@@ -233,6 +233,10 @@ const EX_INFO = {
   'Glute Bridge': {
     type: 'compound', muscle: 'po', inc: 2.5, rest: 90, img: 'Butt_Lift_Bridge',
     cues: ['Fersen nah am Po aufstellen', 'Hüfte hochdrücken, oben den Po fest anspannen', 'Langsam ablassen. Schwerer machen: Gewicht auf die Hüfte legen.']
+  },
+  'Rückenstrecken (45 Grad)': {
+    type: 'compound', muscle: 'beine-beuger', inc: 2.5, rest: 120, img: 'Hyperextensions_Back_Extensions',
+    cues: ['Hüfte auf dem Polster, Füße fixieren', 'Mit geradem Rücken absenken, Dehnung hinten spüren', 'Mit Po und Beinbeugern hochkommen, oben nicht überstrecken. Schwerer machen: Scheibe vor die Brust.']
   }
 };
 
@@ -241,6 +245,104 @@ function exType(name) { const i = exInfo(name); return i ? i.type : 'isolation';
 function exInc(name) { const i = exInfo(name); return i ? i.inc : 2.5; }
 function exRest(name) { const i = exInfo(name); return i ? i.rest : 90; }
 function restLabel(sec) { return sec >= 120 ? '2-3 Min Pause' : '60-90 s Pause'; }
+
+/* ===== Belastungssteuerung: RIR-Ziele und Muskelversagen je Übung =====
+   Ableitung aus der Studienlage (geprüft 2026):
+   - Nähe zum Versagen steigert Hypertrophie leicht, der Nutzen flacht ab
+     ca. 0-2 RIR ab; echtes Versagen ist NICHT nötig (Robinson et al. 2024,
+     Meta-Regression; Refalo et al. 2023 Meta; Grgic et al. 2022 Meta).
+   - Versagen kostet überproportional Erholung: nach Sätzen bis zum Versagen
+     24-48 h längere Regeneration (Morán-Navarro et al. 2017).
+   - Für KRAFT bringt Ausbelasten nichts (Robinson et al. 2024).
+   - Bei leichten Lasten/hohen Wiederholungen muss man näher ans Versagen,
+     um alle Fasern zu rekrutieren (Refalo 2023: Trend; Schoenfeld 2021).
+   - Sicherheits-Einordnung je Übungstyp (frei vs. geführt, Abwurf möglich?)
+     ist Biomechanik-/Lehrbuch-Konsens (NSCA), KEINE RCT-Evidenz: deshalb
+     bewusst konservativ bei freien Langhantel-Übungen ohne Sicherung. */
+
+const LOAD_CLASSES = {
+  avoid: {
+    rir: '2-3', lastRir: '2', short: 'kein Muskelversagen',
+    label: 'Muskelversagen vermeiden',
+    why: 'Freie Langhantel ohne Sicherung: bei echtem Versagen droht Einklemmen oder Technikbruch. Lass 2-3 saubere Wiederholungen im Tank; näher ran nur mit Trainingspartner oder Sicherheitsablage.'
+  },
+  technical: {
+    rir: '2', lastRir: '1-2', short: 'Stopp, wenn die Technik kippt',
+    label: 'Nicht bis zum Muskelversagen: nur bis zur letzten technisch sauberen Wiederholung',
+    why: 'Hier limitiert Balance oder Technik vor dem Zielmuskel. Beende den Satz, sobald die Form kippt (technisches Versagen): wacklige Zusatz-Wiederholungen bringen keinen Extra-Reiz, nur Risiko.'
+  },
+  lastset: {
+    rir: '1-2', lastRir: '0-1', short: 'Versagen optional im letzten Satz',
+    label: 'Muskelversagen: optional im letzten Satz (konzentrisch)',
+    why: 'Sichere Übung, aber ermüdend: reguläre Sätze mit 1-2 Wiederholungen Reserve. Im letzten Satz darfst du bis zur letzten sauberen Wiederholung gehen, musst aber nicht: 1 Reserve wirkt fast genauso gut.'
+  },
+  ok: {
+    rir: '1-2', lastRir: '0-1', short: 'letzter Satz bis zur letzten sauberen Wdh. ok',
+    label: 'Muskelversagen: im letzten Satz möglich (sichere, geführte Übung)',
+    why: 'Geführte oder leicht abbrechbare Übung: im letzten Satz kannst du gefahrlos bis zur letzten sauberen Wiederholung gehen (konzentrisches Versagen). Mehr bringt kaum Extra-Wachstum, kostet nur Erholung.'
+  }
+};
+
+/* Zuordnung je Übung; alles Ungelistete (Maschinen, Kabel, sichere Isolation,
+   Körpergewicht) fällt auf 'ok'. */
+const EX_LOAD = {
+  'Bankdrücken (Langhantel)': 'avoid',
+  'Schrägbankdrücken (Langhantel)': 'avoid',
+  'Kniebeugen (Langhantel)': 'avoid',
+  'Schulterdrücken (Kurzhanteln)': 'technical',
+  'Schulterdrücken (Langhantel)': 'technical',
+  'Goblet Squats': 'technical',
+  'Ausfallschritte': 'technical',
+  'Rumänisches Kreuzheben (Langhantel)': 'technical',
+  'Langhantel-Rudern': 'technical',
+  'Vorgebeugtes Seitheben (Kurzhanteln)': 'technical',
+  'Stirndrücken (SZ-Stange)': 'technical',
+  'Face Pulls': 'technical',
+  'Rückenstrecken (45 Grad)': 'technical',
+  'Bankdrücken (Kurzhanteln)': 'lastset',
+  'Schrägbankdrücken (Kurzhanteln)': 'lastset',
+  'Fliegende (Kurzhanteln)': 'lastset',
+  'Rudern am Kabel': 'lastset',
+  'Einarmiges Kurzhantel-Rudern': 'lastset',
+  'Beinpresse': 'lastset',
+  'Hip Thrust (Langhantel)': 'lastset',
+  'Glute Bridge (Langhantel)': 'lastset',
+  'Seitheben': 'lastset'
+};
+
+/* Belastungs-Klasse einer Übung. Unbekannte (selbst angelegte) Übungen
+   fallen bewusst KONSERVATIV auf 'technical': wir wissen nicht, ob sie
+   frei/riskant sind, also lieber „Stopp bei Technikbruch" als „Versagen ok". */
+function exLoadClass(name) {
+  if (EX_LOAD[name]) return EX_LOAD[name];
+  return EX_INFO[name] ? 'ok' : 'technical';
+}
+
+/* Liefert die komplette Belastungs-Vorgabe für eine Übung. */
+function loadGuide(name, repsTarget) {
+  const cls = exLoadClass(name);
+  const base = LOAD_CLASSES[cls];
+  const range = parseRange(repsTarget || '8-10');
+  const highRep = range.high >= 15 && (cls === 'ok' || cls === 'lastset');
+  return {
+    cls: cls,
+    rir: base.rir,
+    lastRir: base.lastRir,
+    short: base.short,
+    label: base.label,
+    why: base.why + (highRep ? ' Bei so hohen Wiederholungszahlen (' + range.low + '-' + range.high + ') ruhig nah ans Limit: leichte Lasten reizen den Muskel nur nahe am Versagen voll.' : ''),
+    highRep: highRep,
+    stop: 'Abbruchkriterium: Satz beenden, sobald keine weitere Wiederholung mit stabiler, sauberer Technik möglich ist.'
+  };
+}
+
+/* Kompakte Anzeige-Zeile für die Workout-Karte (Klartext statt Fachjargon:
+   „2-3 RIR" liest ein Anfänger sonst als „2-3 Sätze"). */
+function loadLineHtml(name, repsTarget) {
+  const g = loadGuide(name, repsTarget);
+  return '<p class="load-line ll-' + g.cls + '" data-action="ex-info" data-name="' + esc(name) + '" data-reps="' + esc(repsTarget || '') + '" title="Antippen für Details" role="button" tabindex="0">' +
+    '<span class="ll-dot"></span>Lass ' + g.rir + ' Wdh. im Tank · letzter Satz: ' + g.lastRir + ' · ' + g.short + ' ℹ️</p>';
+}
 
 function round25(x) { return Math.round(x / 2.5) * 2.5; }
 
@@ -251,7 +353,11 @@ function fmtKg(w) {
 
 function parseRange(repsStr) {
   const m = String(repsStr).match(/(\d+)\s*[-–]\s*(\d+)/);
-  if (m) return { low: parseInt(m[1], 10), high: parseInt(m[2], 10) };
+  if (m) {
+    let lo = parseInt(m[1], 10), hi = parseInt(m[2], 10);
+    if (lo > hi) { const t = lo; lo = hi; hi = t; } /* „12-8" robust behandeln */
+    return { low: lo, high: hi };
+  }
   const s = String(repsStr).match(/(\d+)/);
   const v = s ? parseInt(s[1], 10) : 10;
   return { low: v, high: v };
@@ -351,8 +457,28 @@ function applyProgression(draft, plans, logs) {
     const allTop = fullCount && doneSets.every(function (s) { return num(s.reps) >= range.high; });
     const anyBelow = doneSets.some(function (s) { return num(s.reps) < range.low; });
 
-    let verdict, newWW;
-    if (allTop) {
+    /* RIR-0-Bremse nur bei Übungen, wo Versagen vermieden werden soll
+       (avoid/technical). Bei sicheren Übungen ist RIR 0 im letzten Satz
+       erlaubt und darf die verdiente Steigerung NICHT blockieren. */
+    const lcls = exLoadClass(entry.name);
+    const rirBrake = entry.lastRir === '0' && (lcls === 'avoid' || lcls === 'technical');
+
+    let verdict, newWW, holdWhy = '';
+    if (allTop && entry.techFail) {
+      /* Oberes Ende nur mit Technikbruch erreicht: NICHT steigern,
+         erst sauber bestätigen (wacklige Wdh. zählen nicht als Fortschritt). */
+      newWW = topWeight;
+      verdict = 'hold';
+      holdWhy = 'Gewicht bleibt bei ' + fmtKg(topWeight) + ': erst wieder sauber schaffen, dann steigern';
+      exercise.failStreak = 0;
+    } else if (allTop && rirBrake) {
+      /* Alles geschafft, aber bei dieser Übung soll Reserve bleiben:
+         Gewicht halten und konsolidieren, gesteigert wird mit 1+ Reserve. */
+      newWW = topWeight;
+      verdict = 'hold';
+      holdWhy = 'Gewicht bleibt bei ' + fmtKg(topWeight) + ': der letzte Satz war am Limit. Bei dieser Übung erst mit 1-2 Wdh. Reserve steigern';
+      exercise.failStreak = 0;
+    } else if (allTop) {
       newWW = round25(topWeight + inc);
       verdict = 'up';
       exercise.failStreak = 0;
@@ -380,7 +506,7 @@ function applyProgression(draft, plans, logs) {
       'hold-low': 'Gewicht halten (' + fmtKg(newWW) + '), Wdh. steigern ▶',
       hold: 'Gewicht halten (' + fmtKg(newWW) + '), Wdh. steigern ▶'
     };
-    results.push({ name: entry.name, verdict: verdict, text: texts[verdict], topWeight: topWeight, e1rm: bestE, isPR: isPR });
+    results.push({ name: entry.name, verdict: verdict, text: holdWhy || texts[verdict], topWeight: topWeight, e1rm: bestE, isPR: isPR });
   });
   return results;
 }
@@ -412,12 +538,21 @@ function showExModal(name, repsTarget) {
   const root = document.getElementById('modal-root');
   const cues = (i && i.cues) ? i.cues.map(function (c) { return '<li>' + esc(c) + '</li>'; }).join('') : '';
   const range = parseRange(repsTarget || '8-10');
+  const g = loadGuide(name, repsTarget);
   root.innerHTML =
     '<div class="modal-backdrop" data-action="close-modal">' +
     '<div class="modal-sheet" data-action="noop">' +
     (i && i.img ? exImagesHtml(name, 'ex-big') : '') +
     '<h3 style="margin:12px 0 4px">' + esc(name) + '</h3>' +
-    '<p class="sub">' + range.low + '-' + range.high + ' Wiederholungen · ' + restLabel(exRest(name)) + ' · letzte Wdh. sollen schwer sein (1-2 in Reserve)</p>' +
+    '<p class="sub">' + range.low + '-' + range.high + ' Wiederholungen · ' + restLabel(exRest(name)) + '</p>' +
+    '<div class="load-box ll-' + g.cls + '">' +
+    '<p class="load-title"><span class="ll-dot"></span>' + esc(g.label) + '</p>' +
+    '<p class="load-detail">Reguläre Sätze: <b>' + g.rir + ' RIR</b> (so viele saubere Wiederholungen bleiben im Tank) · letzter Satz: <b>' + g.lastRir + ' RIR</b></p>' +
+    '<p class="load-detail">' + esc(g.why) + '</p>' +
+    '<p class="load-detail"><b>' + esc(g.stop) + '</b></p>' +
+    '<p class="load-detail">Bei Schmerzen (nicht Muskelbrennen): Übung abbrechen und die Ursache professionell abklären lassen.</p>' +
+    '<p class="load-src">Was RIR bedeutet: Mehr → „RIR & Muskelversagen erklärt". Basis: Studienlage zu Versagen vs. Reserve (u. a. Robinson 2024, Refalo 2023/24, Grgic 2022).</p>' +
+    '</div>' +
     (cues ? '<ul class="cue-list">' + cues + '</ul>' : '') +
     '<button class="btn btn-primary" data-action="close-modal" style="margin-top:14px">Alles klar 💪</button>' +
     '</div></div>';
@@ -488,6 +623,13 @@ function showFinishOverlay(stats, results) {
   const goalLine = stats.weekGoal ? '<p class="goal-line">' + esc(stats.weekGoal) + '</p>' : '';
   const milestoneLine = stats.milestone ? '<p class="goal-line">' + esc(stats.milestone) + '</p>' : '';
 
+  /* Ermüdungs-Hinweis: mehrere Übungen unter Ziel = Zeichen für zu viel,
+     nie für „mehr Versagen". Zahlenwert (≥2) ist Praxis-Konvention. */
+  const tiredCount = results.filter(function (r) { return r.verdict === 'down' || r.verdict === 'hold-low'; }).length;
+  const fatigueLine = tiredCount >= 2
+    ? '<p class="fatigue-line">⚠️ Ermüdungs-Zeichen: ' + tiredCount + ' Übungen unter dem Wdh.-Ziel. Nächste Einheit bewusst locker: gleiche Gewichte, gern 1 Satz weniger bei den betroffenen Übungen und überall 1-2 Wdh. mehr Reserve. Hält das 2 Wochen an: eine ganze Woche leicht trainieren (Deload) und Schlaf checken.</p>'
+    : '';
+
   root.innerHTML =
     '<div class="overlay-backdrop">' +
     '<div class="finish-card">' +
@@ -498,6 +640,7 @@ function showFinishOverlay(stats, results) {
     goalLine +
     milestoneLine +
     (prs.length ? '<p class="pr-line">🏆 Neuer Rekord: ' + prs.map(function (r) { return esc(r.name); }).join(', ') + '!</p>' : '') +
+    fatigueLine +
     '<div class="section-title" style="text-align:left">Plan fürs nächste Mal</div>' +
     '<ul class="result-list">' + lines + '</ul>' +
     '<button class="btn btn-primary" data-action="finish-close">Weiter</button>' +

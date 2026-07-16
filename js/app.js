@@ -94,7 +94,7 @@ function defaultPlans() {
             ex('Schrägbankdrücken (Kurzhanteln)', 3, '8-10'),
             ex('Butterfly', 2, '12-15'),
             ex('Schulterdrücken (Kurzhanteln)', 3, '8-10'),
-            ex('Seitheben', 3, '12-15'),
+            ex('Seitheben', 4, '12-15'),
             ex('Trizepsdrücken am Kabel', 3, '10-12')
           ]
         },
@@ -105,7 +105,8 @@ function defaultPlans() {
             ex('Rudern am Kabel', 3, '8-10'),
             ex('Einarmiges Kurzhantel-Rudern', 3, '10-12'),
             ex('Face Pulls', 3, '12-15'),
-            ex('Bizeps-Curls (Kurzhanteln)', 3, '10-12')
+            ex('Bizeps-Curls (Kurzhanteln)', 3, '10-12'),
+            ex('Kabel-Crunch', 3, '12-15')
           ]
         },
         {
@@ -114,11 +115,10 @@ function defaultPlans() {
             ex('Beinpresse', 3, '10-12'),
             ex('Hip Thrust (Langhantel)', 3, '10-12'),
             ex('Beinstrecker', 3, '12-15'),
-            ex('Beinbeuger liegend', 3, '12-15'),
+            ex('Beinbeuger sitzend', 3, '12-15'),
             ex('Adduktoren-Maschine', 2, '12-15'),
             ex('Abduktoren-Maschine', 2, '12-15'),
-            ex('Wadenheben', 3, '15-20'),
-            ex('Kabel-Crunch', 3, '12-15')
+            ex('Wadenheben', 3, '15-20')
           ]
         }
       ]
@@ -151,7 +151,7 @@ function defaultPlans() {
           exercises: [
             ex('Beinpresse', 3, '10-12'),
             ex('Beinstrecker', 3, '12-15'),
-            ex('Beinbeuger liegend', 3, '12-15'),
+            ex('Beinbeuger sitzend', 3, '12-15'),
             ex('Adduktoren-Maschine', 2, '12-15'),
             ex('Wadenheben', 3, '15-20')
           ]
@@ -163,6 +163,7 @@ function defaultPlans() {
             ex('Latzug (enger Griff)', 3, '8-10'),
             ex('Schulterdrücken (Maschine)', 3, '10-12'),
             ex('Butterfly', 3, '12-15'),
+            ex('Seitheben', 2, '12-15'),
             ex('Hammer-Curls', 3, '10-12')
           ]
         },
@@ -172,7 +173,7 @@ function defaultPlans() {
             ex('Goblet Squats', 3, '10-12'),
             ex('Ausfallschritte', 3, '10-12'),
             ex('Hip Thrust (Langhantel)', 3, '10-12'),
-            ex('Beinbeuger liegend', 3, '12-15'),
+            ex('Beinbeuger sitzend', 3, '12-15'),
             ex('Abduktoren-Maschine', 2, '12-15'),
             ex('Wadenheben sitzend', 3, '15-20'),
             ex('Kabel-Crunch', 3, '12-15')
@@ -225,6 +226,7 @@ function loadState() {
   if (!s.settings || typeof s.settings !== 'object') s.settings = {};
   if (typeof s.settings.autoTimer !== 'boolean') s.settings.autoTimer = true;
   if (typeof s.settings.timerSound !== 'boolean') s.settings.timerSound = true;
+  if (typeof s.settings.rirHintSeen !== 'boolean') s.settings.rirHintSeen = false;
   if (typeof s.settings.bodyWeight !== 'number' || isNaN(s.settings.bodyWeight)) s.settings.bodyWeight = 80;
   if (typeof s.settings.onboarded !== 'boolean') s.settings.onboarded = false;
   ['3x', '5x'].forEach(function (k) {
@@ -446,7 +448,7 @@ let chartExName = null;
 let chartSelIdx = null;
 let planOpenDayId = null;            /* null = automatisch (heutiger/nächster Tag), 'none' = alle zu */
 let weekChartMode = 'freq';          /* Wochen-Chart: 'freq' oder 'vol' */
-const mehrOpen = { wissen: false, schutz: false, gefahr: false }; /* eingeklappte Bereiche in „Mehr" */
+const mehrOpen = { rir: false, wissen: false, schutz: false, gefahr: false }; /* eingeklappte Bereiche in „Mehr" */
 
 /* Bildschirm während des Trainings anlassen (Wake Lock) */
 let wakeLock = null;
@@ -917,6 +919,15 @@ function renderWorkout() {
     '<div class="timer-fill" id="timer-progress"></div>' +
     '</div>';
 
+  /* Einmaliger Ersthinweis zur neuen Belastungs-Zeile */
+  if (!state.settings.rirHintSeen) {
+    html +=
+      '<div class="card rir-hint">' +
+      '<p class="sub">💡 <b>Neu: die farbige Zeile unter jeder Übung.</b> „Im Tank" heißt: so viele saubere Wiederholungen wären am Satzende noch gegangen (Fachwort: RIR). Die Zeile sagt dir, wie nah du ans Limit gehen sollst. Antippen zeigt Details.</p>' +
+      '<button class="btn btn-ghost small" data-action="rir-hint-ok" style="margin-top:8px">Verstanden</button>' +
+      '</div>';
+  }
+
   draft.entries.forEach(function (entry, ei) {
     let rows = '';
     let workNum = 0;
@@ -933,11 +944,27 @@ function renderWorkout() {
     });
 
     const info = exInfo(entry.name);
-    const workCount = entry.sets.filter(function (s) { return !s.warmup; }).length;
+    const workSetsAll = entry.sets.filter(function (s) { return !s.warmup; });
+    const workCount = workSetsAll.length;
     const thumb = exImagesHtml(entry.name, 'ex-thumb');
     const metaParts = ['Ziel: ' + workCount + ' × ' + esc(entry.repsTarget), restLabel(entry.rest)];
     if (entry.e1rm) metaParts.push('Max ~' + fmtKg(round25(entry.e1rm)));
     const infoAttrs = 'data-action="ex-info" data-name="' + esc(entry.name) + '" data-reps="' + esc(entry.repsTarget) + '"';
+
+    /* RIR-Rückfrage, sobald der letzte Arbeitssatz abgehakt ist: steuert die
+       Progression (kein Auto-Steigern bei RIR 0 oder leidender Technik). */
+    let rirAsk = '';
+    if (workCount > 0 && workSetsAll[workCount - 1].done) {
+      rirAsk =
+        '<div class="rir-ask">' +
+        '<span class="rir-q">Letzter Satz: wie viele saubere Wdh. waren noch drin?</span>' +
+        '<div class="chip-row rir-chips">' +
+        [['0', '0 (gerade so)'], ['1', '1'], ['2', '2 oder mehr']].map(function (o) {
+          return '<button class="chip' + (entry.lastRir === o[0] ? ' active' : '') + '" data-action="set-lastrir" data-ex="' + ei + '" data-v="' + o[0] + '">' + o[1] + '</button>';
+        }).join('') +
+        '<button class="chip tech-chip' + (entry.techFail ? ' active' : '') + '" data-action="toggle-techfail" data-ex="' + ei + '">Technik wurde unsauber</button>' +
+        '</div></div>';
+    }
 
     html +=
       '<div class="card ex-card">' +
@@ -950,9 +977,11 @@ function renderWorkout() {
       '</span></div>' +
       '<p class="ex-meta">' + metaParts.join(' · ') + '</p>' +
       '</div></div>' +
+      loadLineHtml(entry.name, entry.repsTarget) +
       '<p class="banner banner-' + entry.banner.cls + '">' + esc(entry.banner.text) + '</p>' +
       (entry.lastInfo ? '<p class="last-info">' + esc(entry.lastInfo) + '</p>' : '') +
       '<div class="set-rows">' + rows + '</div>' +
+      rirAsk +
       '</div>';
   });
 
@@ -1515,12 +1544,28 @@ function renderMehr() {
   const wissenBody =
     '<p class="sub">Die Empfehlungen kommen nicht aus dem Bauch, sondern aus Studien:</p>' +
     '<ul class="science-list">' +
-    '<li><b>Nah ans Limit:</b> Muskeln wachsen am besten, wenn die letzten 1-2 Wiederholungen wirklich schwer sind (Meta-Analyse von Robinson und Kollegen, 2023).</li>' +
+    '<li><b>Nah ans Limit:</b> Muskeln wachsen am besten, wenn die letzten 1-2 Wiederholungen wirklich schwer sind. Ganz bis zum Versagen musst du dafür nicht (Meta-Analysen von Robinson und Kollegen 2024 sowie Refalo und Kollegen 2023). Details: „RIR & Muskelversagen erklärt".</li>' +
     '<li><b>Steigern:</b> Sobald du überall die obere Wiederholungszahl schaffst, geht das Gewicht rauf (ACSM-Leitlinie: +2 bis 10%). Genau das rechnet die App nach jedem Training für dich aus.</li>' +
     '<li><b>Aufwärmen:</b> Leichte Aufwärmsätze mit ca. 40% und 80% des Arbeitsgewichts machen die schweren Sätze messbar besser (Studien zu Bankdrücken und Kniebeugen).</li>' +
     '<li><b>Pause:</b> 2-3 Minuten zwischen schweren Sätzen bringen mehr Kraft und Muskeln als 1 Minute (Schoenfeld und Kollegen, 2016).</li>' +
     '<li><b>Kalorien:</b> grobe Schätzung über MET-Werte aus dem Kompendium körperlicher Aktivitäten (Krafttraining ~3,5 MET, Cardio je nach Gerät), gerechnet mit deinem Körpergewicht. Als Orientierung gedacht, nicht als Messung.</li>' +
     '</ul>';
+
+  const rirBody =
+    '<p class="sub"><b>RIR</b> heißt „Reps in Reserve": wie viele technisch saubere Wiederholungen du am Satzende noch schaffen KÖNNTEST.</p>' +
+    '<ul class="science-list">' +
+    '<li><b>RIR 3:</b> ungefähr drei saubere Wiederholungen wären noch drin. Fühlt sich zügig, aber kontrolliert an.</li>' +
+    '<li><b>RIR 2:</b> zwei wären noch drin. Die letzten Wiederholungen werden langsamer: das ist dein Normalfall für die meisten Sätze.</li>' +
+    '<li><b>RIR 1:</b> genau eine wäre noch drin. Schwer, aber sauber.</li>' +
+    '<li><b>RIR 0:</b> keine weitere saubere Wiederholung möglich. Das ist Muskelversagen.</li>' +
+    '<li><b>Technisches Versagen:</b> die vorgegebene Technik lässt sich nicht mehr sicher halten (Schwung, Hohlkreuz, Wackeln). <b>Hier ist IMMER Schluss</b>, egal was der Plan sagt.</li>' +
+    '<li><b>Konzentrisches Versagen:</b> du bekommst das Gewicht trotz sauberer Technik nicht mehr hoch. An sicheren, geführten Übungen im letzten Satz okay.</li>' +
+    '<li><b>Absolutes Versagen:</b> auch Halten/Ablassen geht nicht mehr. Braucht niemand: bringt kein Extra-Wachstum, kostet nur Erholung.</li>' +
+    '<li><b>Brennen ≠ Versagen:</b> Muskelbrennen und Anstrengung kommen früher. Zähl ehrlich: könntest du noch 2-3 saubere Wiederholungen? Dann bist du bei RIR 2-3, nicht am Limit. Die meisten haben mehr im Tank, als sie denken (im Schnitt verschätzt man sich um etwa 1 Wiederholung).</li>' +
+    '</ul>' +
+    '<p class="sub" style="margin-top:8px"><b>So nutzt die App das:</b> Jede Übung zeigt im Training ihr RIR-Ziel und ob Muskelversagen dort okay ist. Nach dem letzten Satz fragt die App kurz, wie viel noch drin war: bei unsauberer Technik (und bei riskanteren freien Übungen auch bei „0, gerade so") wird das Gewicht NICHT automatisch erhöht, sondern erst sauber bestätigt.</p>' +
+    '<p class="sub" style="margin-top:8px"><b>Tipp zum Eichen:</b> Gerade am Anfang sind das grobe Richtwerte, die meisten hören zu früh auf. Teste an einer sicheren Maschinen-Übung (z. B. Beinstrecker) im letzten Satz gelegentlich, wie sich echtes Versagen anfühlt: dann weißt du, wie weit weg „2 im Tank" wirklich ist.</p>' +
+    '<p class="sub" style="margin-top:8px">Basis ist die Studienlage (u. a. Robinson 2024, Refalo 2023/24, Grgic 2022, Morán-Navarro 2017): Nähe zum Versagen wirkt graduell, die allerletzte Wiederholung ist fürs Wachstum nicht nötig und kostet 1-2 Tage Extra-Erholung. Die konkreten RIR-Zahlen und Übungs-Einstufungen sind daraus abgeleitete Praxis-Empfehlungen, keine exakten Studien-Schwellen.</p>';
 
   const schutzBody =
     '<p class="sub">🔒 Alle Daten bleiben nur auf deinem Gerät: kein Konto, keine Cloud, kein Tracking. Sichern kannst du sie über das Backup weiter oben.</p>' +
@@ -1598,6 +1643,7 @@ function renderMehr() {
     '</div>' +
     /* 7) Eingeklappte Bereiche */
     '<div class="section-title">Mehr Infos</div>' +
+    collapse('rir', '🎯 RIR & Muskelversagen erklärt', rirBody) +
     collapse('wissen', '📚 Warum die App so tickt', wissenBody) +
     collapse('schutz', '🔒 Datenschutz & Hinweis', schutzBody) +
     collapse('gefahr', '⚠️ Gefahrenzone', gefahrBody, true) +
@@ -1792,12 +1838,16 @@ function sanitizeSet(x) {
 
 function sanitizeEntry(en) {
   en = (en && typeof en === 'object') ? en : {};
-  return {
+  const out = {
     exId: asStr(en.exId, 40),
     name: asStr(en.name, 80),
     repsTarget: asStr(en.repsTarget, 20),
     sets: Array.isArray(en.sets) ? en.sets.slice(0, 20).map(sanitizeSet) : []
   };
+  /* Optionale RIR-Angaben (seit v7.4): additiv, kein Formatwechsel */
+  if (en.lastRir === '0' || en.lastRir === '1' || en.lastRir === '2') out.lastRir = en.lastRir;
+  if (en.techFail === true) out.techFail = true;
+  return out;
 }
 
 function sanitizeLog(l) {
@@ -1838,6 +1888,7 @@ function sanitizeSettings(s) {
   return {
     autoTimer: s.autoTimer !== false,
     timerSound: s.timerSound !== false,
+    rirHintSeen: s.rirHintSeen === true,
     bodyWeight: (typeof s.bodyWeight === 'number' && s.bodyWeight >= 40 && s.bodyWeight <= 300) ? s.bodyWeight : 80,
     onboarded: s.onboarded === true,
     weeklyTarget: clampInt(s.weeklyTarget, 1, 7, 3),
@@ -2370,6 +2421,28 @@ function handleAction(action, el) {
       renderMehr();
       break;
     case 'goto-view': showView(el.dataset.v); break;
+    case 'set-lastrir': {
+      const en = state.draft && state.draft.entries[parseInt(el.dataset.ex, 10)];
+      if (!en) break;
+      en.lastRir = (en.lastRir === el.dataset.v) ? null : el.dataset.v;
+      saveState();
+      renderWorkout();
+      break;
+    }
+    case 'rir-hint-ok':
+      state.settings.rirHintSeen = true;
+      saveState();
+      renderWorkout();
+      break;
+    case 'toggle-techfail': {
+      const en = state.draft && state.draft.entries[parseInt(el.dataset.ex, 10)];
+      if (!en) break;
+      en.techFail = !en.techFail;
+      if (en.techFail) toast('Alles gut: gleiches Gewicht sauber schaffen ist auch Fortschritt 💪');
+      saveState();
+      renderWorkout();
+      break;
+    }
     case 'toggle-autotimer':
       state.settings.autoTimer = !state.settings.autoTimer;
       saveState();

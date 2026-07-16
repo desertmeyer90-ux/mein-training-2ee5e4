@@ -1127,6 +1127,70 @@ select:focus-visible,
 .danger-zone { border-color: rgba(255, 85, 102, 0.35); }
 .danger-zone .col-title { color: var(--danger); }
 
+/* ===== Belastungssteuerung: RIR-Zeile, Info-Box, RIR-Rückfrage ===== */
+.load-line {
+  display: flex;
+  align-items: center;
+  gap: 7px;
+  color: var(--muted);
+  font-size: 0.76rem;
+  margin: 8px 0 2px;
+  cursor: pointer;
+}
+.ll-dot {
+  width: 8px;
+  height: 8px;
+  min-width: 8px;
+  border-radius: 50%;
+  display: inline-block;
+  background: var(--muted);
+}
+.ll-ok .ll-dot { background: var(--success); }
+.ll-lastset .ll-dot { background: var(--accent); }
+.ll-technical .ll-dot { background: #ffd166; }
+.ll-avoid .ll-dot { background: var(--danger); }
+
+.load-box {
+  background: var(--card2);
+  border: 1px solid var(--border);
+  border-radius: 12px;
+  padding: 10px 12px;
+  margin-top: 10px;
+}
+.load-box.ll-avoid { border-color: rgba(255, 85, 102, 0.35); }
+.load-box .load-title {
+  display: flex;
+  align-items: center;
+  gap: 7px;
+  font-size: 0.86rem;
+  font-weight: 700;
+}
+.load-box .load-detail { color: var(--muted); font-size: 0.8rem; line-height: 1.5; margin-top: 6px; }
+.load-box .load-src { color: var(--muted); font-size: 0.7rem; line-height: 1.4; margin-top: 8px; opacity: 0.8; }
+
+.rir-ask {
+  margin-top: 10px;
+  padding-top: 10px;
+  border-top: 1px dashed var(--border);
+}
+.rir-q { display: block; color: var(--muted); font-size: 0.8rem; }
+.rir-chips { margin-top: 8px; }
+.rir-chips .chip { padding: 7px 12px; font-size: 0.8rem; }
+.tech-chip.active { background: rgba(255, 209, 102, 0.15); border-color: #ffd166; color: #ffd166; }
+
+.fatigue-line {
+  color: #ffd166;
+  font-size: 0.82rem;
+  line-height: 1.5;
+  font-weight: 600;
+  margin-top: 10px;
+  text-align: left;
+  background: rgba(255, 209, 102, 0.08);
+  border: 1px solid rgba(255, 209, 102, 0.25);
+  border-radius: 10px;
+  padding: 9px 11px;
+}
+
 /* Timer-Ende: kurzes Aufblinken der Timer-Leiste */
 .timer-bar.done-flash {
   animation: timerDone 0.5s ease 3;
