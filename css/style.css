@@ -1191,6 +1191,71 @@ select:focus-visible,
   padding: 9px 11px;
 }
 
+/* ===== Körpergewicht: Check-in, Chart, Liste ===== */
+.weigh-card { border-color: rgba(255, 138, 46, 0.25); }
+
+.wt-form-row { margin-top: 12px; }
+.wt-form-row label { display: block; margin-bottom: 6px; }
+.wt-input {
+  width: 100%;
+  background: var(--card2);
+  border: 1px solid var(--border);
+  border-radius: 10px;
+  color: var(--text);
+  padding: 11px 10px;
+  font-size: 16px; /* iOS-Zoom vermeiden */
+}
+.wt-input:focus { outline: none; border-color: var(--accent); }
+
+.wt-chart { width: 100%; height: auto; display: block; margin-top: 10px; }
+.wt-raw { fill: none; stroke: var(--muted); stroke-width: 1.2; opacity: 0.7; }
+.wt-trend {
+  fill: none;
+  stroke: var(--accent);
+  stroke-width: 2.5;
+  stroke-linecap: round;
+  stroke-linejoin: round;
+}
+.wt-goal { stroke: var(--success); stroke-width: 1.2; stroke-dasharray: 5 4; }
+.wt-dot { fill: var(--text); stroke: var(--card); stroke-width: 1.5; }
+.wt-dot.flagged { fill: #ffd166; }
+.wt-dot.sel { fill: var(--accent); }
+
+.wt-status {
+  margin-top: 12px;
+  padding: 9px 12px;
+  border-radius: 10px;
+  background: var(--card2);
+  border: 1px solid var(--border);
+  font-size: 0.88rem;
+  line-height: 1.45;
+}
+.wt-status.wt-down { border-color: rgba(61, 220, 132, 0.35); }
+.wt-status.wt-down b { color: var(--success); }
+.wt-status.wt-up b { color: var(--accent); }
+
+.wt-target-row {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  flex-wrap: wrap;
+  margin-top: 12px;
+  padding-top: 12px;
+  border-top: 1px dashed var(--border);
+}
+
+.wt-row {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  padding: 8px 0;
+  border-bottom: 1px dashed var(--border);
+}
+.wt-row:last-of-type { border-bottom: none; }
+.wt-row-main { flex: 1; min-width: 0; }
+.wt-note { margin-top: 2px; font-size: 0.78rem; }
+.wt-del { color: var(--danger); }
+
 /* Timer-Ende: kurzes Aufblinken der Timer-Leiste */
 .timer-bar.done-flash {
   animation: timerDone 0.5s ease 3;

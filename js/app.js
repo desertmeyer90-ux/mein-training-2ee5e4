@@ -9,7 +9,7 @@
    ===================================================== */
 
 const STORAGE_KEY = 'mein-training-v1';
-const CURRENT_DATA_VERSION = 7;   /* Version des gespeicherten Datenformats */
+const CURRENT_DATA_VERSION = 8;   /* Version des gespeicherten Datenformats (v8: + weights) */
 const BACKUP_FORMAT_VERSION = 1;  /* Version der Backup-Datei-Hülle */
 const PREIMPORT_KEY = STORAGE_KEY + '-vor-import';
 const MAX_IMPORT_BYTES = 10 * 1024 * 1024;
@@ -218,6 +218,18 @@ function loadState() {
     if (!s.plans[k] || !Array.isArray(s.plans[k].days)) s.plans[k] = def.plans[k];
   });
   if (!Array.isArray(s.logs)) s.logs = [];
+
+  /* Migration v8 (16.07.2026): wöchentliches Gewichts-Tracking.
+     Rückwärtskompatibel: fehlt das Feld, wird es leer angelegt;
+     ungültige Einträge werden defensiv verworfen. */
+  if (!Array.isArray(s.weights)) s.weights = [];
+  s.weights = s.weights.filter(function (w) {
+    return w && typeof w === 'object' &&
+      typeof w.date === 'string' && /^\d{4}-\d{2}-\d{2}$/.test(w.date) &&
+      typeof w.kg === 'number' && !isNaN(w.kg) && w.kg >= 30 && w.kg <= 300;
+  });
+  s.weights.sort(function (a, b) { return a.date < b.date ? -1 : 1; });
+
   /* Angefangenes Training nur am selben Tag fortsetzen */
   if (s.draft && s.draft.date !== todayISO()) s.draft = null;
 
@@ -227,6 +239,7 @@ function loadState() {
   if (typeof s.settings.autoTimer !== 'boolean') s.settings.autoTimer = true;
   if (typeof s.settings.timerSound !== 'boolean') s.settings.timerSound = true;
   if (typeof s.settings.rirHintSeen !== 'boolean') s.settings.rirHintSeen = false;
+  if (typeof s.settings.targetWeightKg !== 'number' || isNaN(s.settings.targetWeightKg) || s.settings.targetWeightKg < 30 || s.settings.targetWeightKg > 300) s.settings.targetWeightKg = null;
   if (typeof s.settings.bodyWeight !== 'number' || isNaN(s.settings.bodyWeight)) s.settings.bodyWeight = 80;
   if (typeof s.settings.onboarded !== 'boolean') s.settings.onboarded = false;
   ['3x', '5x'].forEach(function (k) {
@@ -449,6 +462,19 @@ let chartSelIdx = null;
 let planOpenDayId = null;            /* null = automatisch (heutiger/nächster Tag), 'none' = alle zu */
 let weekChartMode = 'freq';          /* Wochen-Chart: 'freq' oder 'vol' */
 const mehrOpen = { rir: false, wissen: false, schutz: false, gefahr: false }; /* eingeklappte Bereiche in „Mehr" */
+let wtSelIdx = null;                 /* ausgewählter Punkt im Gewichts-Chart */
+let wtListOpen = false;              /* Einträge-Liste im Gewichts-Bereich auf/zu */
+let weightModalFlags = [];           /* gewählte Umstände im Gewichts-Dialog */
+
+/* Besondere Umstände beim Wiegen (rein optional, erklären Ausreißer) */
+const WEIGHT_FLAGS = [
+  { id: 'salz', label: '🧂 Salzreich gegessen' },
+  { id: 'schlaf', label: '😴 Schlechte Nacht' },
+  { id: 'krank', label: '🤒 Krank' },
+  { id: 'reise', label: '🧳 Reise' },
+  { id: 'kater', label: '💪 Starker Muskelkater' },
+  { id: 'zeit', label: '⏰ Andere Uhrzeit' }
+];
 
 /* Bildschirm während des Trainings anlassen (Wake Lock) */
 let wakeLock = null;
@@ -621,6 +647,18 @@ function renderHeute() {
       '</div>';
   }
 
+  /* Montags-Erinnerung: sichtbar, bis für DIESE Woche ein Gewicht
+     eingetragen ist (bleibt auch nach einem verpassten Montag stehen) */
+  let weighCard = '';
+  if (!weightEntryForWeek(isoOf(monday))) {
+    weighCard =
+      '<div class="card weigh-card">' +
+      '<span class="badge">⚖️ Wöchentlicher Gewichts-Check-in</span>' +
+      '<p class="sub" style="margin-top:8px">Trage dein aktuelles Gewicht unter vergleichbaren Bedingungen ein: morgens, nach dem Toilettengang, vor dem Essen und Trinken, immer mit derselben Waage.</p>' +
+      '<div class="btn-row"><button class="btn btn-ghost" data-action="weight-open">Gewicht eintragen</button></div>' +
+      '</div>';
+  }
+
   /* Schnellstart-Chips */
   const chips = plan.days.map(function (d) {
     return '<button class="chip" data-action="start-day" data-day="' + d.id + '">' + esc(d.short) + '</button>';
@@ -629,7 +667,7 @@ function renderHeute() {
     '<div class="section-title">Anderes Training starten</div>' +
     '<div class="chip-row">' + chips + '</div>';
 
-  document.getElementById('view-heute').innerHTML = strip + progress + mainCard + chipBlock;
+  document.getElementById('view-heute').innerHTML = strip + progress + mainCard + weighCard + chipBlock;
 }
 
 /* ===== Ansicht: Plan ===== */
@@ -1357,6 +1395,273 @@ function weekBarsSVG(weeks, mode, target) {
     goal + bars + tops + labels + '</svg>';
 }
 
+/* ===== Körpergewicht: wöchentlicher Check-in mit geglättetem Trend ===== */
+
+/* Montag der Kalenderwoche eines beliebigen Datums (lokale Zeit) */
+function mondayIsoOf(iso) {
+  const p = iso.split('-').map(Number);
+  const d = new Date(p[0], p[1] - 1, p[2]);
+  d.setDate(d.getDate() - ((d.getDay() + 6) % 7));
+  return isoOf(d);
+}
+
+function weightEntryForWeek(mondayIso) {
+  for (let i = 0; i < state.weights.length; i++) {
+    if (mondayIsoOf(state.weights[i].date) === mondayIso) return state.weights[i];
+  }
+  return null;
+}
+
+function fmtW(kg) {
+  return (Math.round(kg * 10) / 10).toLocaleString('de-DE') + ' kg';
+}
+
+function daysBetweenIso(a, b) {
+  const pa = a.split('-').map(Number), pb = b.split('-').map(Number);
+  return Math.round((new Date(pb[0], pb[1] - 1, pb[2]) - new Date(pa[0], pa[1] - 1, pa[2])) / 86400000);
+}
+
+/* Geglätteter Trend: gleitender Durchschnitt über bis zu 3 Messungen.
+   Glättet Wasser-/Speicher-Schwankungen, ohne echte Entwicklungen zu
+   verstecken. Bei 1-2 Einträgen entspricht der Trend den Rohwerten. */
+function weightTrendSeries() {
+  return state.weights.map(function (w, i) {
+    let sum = 0, n = 0;
+    for (let j = Math.max(0, i - 2); j <= i; j++) { sum += state.weights[j].kg; n++; }
+    return Math.round((sum / n) * 100) / 100;
+  });
+}
+
+/* Alle Kennzahlen werden aus den gespeicherten Messwerten abgeleitet,
+   nichts davon wird doppelt gespeichert. */
+function weightKpis() {
+  const ws = state.weights;
+  if (ws.length === 0) return null;
+  const trend = weightTrendSeries();
+  const first = ws[0], last = ws[ws.length - 1];
+  const tLast = trend[trend.length - 1];
+  const spanDays = daysBetweenIso(first.date, last.date);
+  const spanWeeks = Math.max(1, spanDays / 7);
+  /* Trend der letzten ~4 Wochen: Trendwert heute vs. Trendwert des
+     Eintrags, der mindestens 28 Tage zurückliegt */
+  let slope4 = null;
+  for (let i = ws.length - 1; i >= 0; i--) {
+    const back = daysBetweenIso(ws[i].date, last.date);
+    if (back >= 28) {
+      slope4 = Math.round(((tLast - trend[i]) / (back / 7)) * 100) / 100;
+      break;
+    }
+  }
+  if (slope4 === null && ws.length >= 3 && spanDays >= 14) {
+    slope4 = Math.round(((tLast - trend[0]) / spanWeeks) * 100) / 100;
+  }
+  return {
+    count: ws.length,
+    first: first, last: last, trend: trend, tLast: tLast,
+    diffTotal: Math.round((last.kg - first.kg) * 10) / 10,
+    diffPct: first.kg > 0 ? Math.round(((last.kg - first.kg) / first.kg) * 1000) / 10 : 0,
+    diffLast: ws.length >= 2 ? Math.round((last.kg - ws[ws.length - 2].kg) * 10) / 10 : null,
+    perWeek: ws.length >= 2 ? Math.round(((last.kg - first.kg) / spanWeeks) * 100) / 100 : null,
+    slope4: slope4,
+    target: state.settings.targetWeightKg,
+    fluct: Math.abs(last.kg - tLast) >= 1.5
+  };
+}
+
+/* Neutrale Einordnung: basiert auf dem geglätteten Trend, nie auf einem
+   Einzelwert. Schwellen (±0,15 / -0,5 kg pro Woche) sind Praxis-Konvention. */
+function weightStatus(k) {
+  if (!k || k.count < 3 || k.slope4 === null) {
+    return { cls: 'neutral', label: 'Noch nicht genügend Daten', sub: 'Ab etwa 3 Wochen-Einträgen zeigt dir Stemma den geglätteten Trend.' };
+  }
+  if (k.fluct) {
+    return { cls: 'neutral', label: 'Starke kurzfristige Schwankung', sub: 'Der letzte Wert weicht deutlich vom Trend ab: meist Wasser, Salz oder Speicher. Entscheidend ist die Trendlinie.' };
+  }
+  if (k.slope4 <= -0.5) return { cls: 'down', label: 'Deutlicher Abwärtstrend', sub: 'Etwa ' + fmtW(Math.abs(k.slope4)) + ' pro Woche. Stark! Achte weiter auf Eiweiß und dein Training, damit Muskeln bleiben.' };
+  if (k.slope4 <= -0.15) return { cls: 'down', label: 'Langsamer Abwärtstrend', sub: 'Etwa ' + fmtW(Math.abs(k.slope4)) + ' pro Woche: nachhaltig und gut durchzuhalten.' };
+  if (k.slope4 < 0.15) {
+    if (k.target && k.target < k.tLast && k.count >= 5) {
+      return { cls: 'neutral', label: 'Mehrere Wochen ohne erkennbaren Abwärtstrend', sub: 'Kein Grund zur Sorge, aber ein guter Zeitpunkt, Portionen und Alltagbewegung ehrlich anzuschauen.' };
+    }
+    return { cls: 'neutral', label: 'Gewicht weitgehend stabil', sub: 'Der Trend bewegt sich kaum: für Halten genau richtig.' };
+  }
+  return { cls: 'up', label: 'Gewicht steigt aktuell', sub: 'Ein Anstieg über wenige Wochen ist oft Wasser oder volle Speicher: beobachte den Trend, bevor du etwas änderst.' };
+}
+
+/* Liniendiagramm: Rohwerte (dünn, mit Punkten) + geglätteter Trend (kräftig)
+   + optional Ziellinie. Zeitachse proportional zu den echten Daten. */
+function weightChartSVG(k, selIdx) {
+  const ws = state.weights;
+  const W = 340, H = 180, padL = 42, padR = 14, padT = 16, padB = 24;
+  const iw = W - padL - padR, ih = H - padT - padB;
+  const t0 = ws[0].date, t1 = ws[ws.length - 1].date;
+  const span = Math.max(1, daysBetweenIso(t0, t1));
+  function x(i) { return padL + (ws.length === 1 ? iw / 2 : (daysBetweenIso(t0, ws[i].date) / span) * iw); }
+
+  let rawMin = Infinity, rawMax = -Infinity;
+  ws.forEach(function (w) { rawMin = Math.min(rawMin, w.kg); rawMax = Math.max(rawMax, w.kg); });
+  if (k.target) { rawMin = Math.min(rawMin, k.target); rawMax = Math.max(rawMax, k.target); }
+  if (rawMax - rawMin < 2) { rawMin -= 1; rawMax += 1; }
+  const stepsTry = [0.5, 1, 2, 2.5, 5, 10, 20];
+  let step = stepsTry[stepsTry.length - 1];
+  for (let si = 0; si < stepsTry.length; si++) {
+    if ((rawMax - rawMin) / stepsTry[si] <= 4) { step = stepsTry[si]; break; }
+  }
+  let min = Math.floor(rawMin / step) * step;
+  let max = Math.ceil(rawMax / step) * step;
+  if (max === rawMax) max += step / 2;
+  function y(v) { return padT + ih - ((v - min) / (max - min)) * ih; }
+
+  let grid = '';
+  for (let v = min; v <= max + 0.001; v += step) {
+    const gy = y(v);
+    if (gy < padT - 1) continue;
+    grid += '<line x1="' + padL + '" y1="' + gy.toFixed(1) + '" x2="' + (W - padR) + '" y2="' + gy.toFixed(1) + '" class="chart-grid"/>' +
+      '<text x="' + (padL - 6) + '" y="' + (gy + 3).toFixed(1) + '" class="chart-tick" text-anchor="end">' + v.toLocaleString('de-DE') + '</text>';
+  }
+
+  let goal = '';
+  if (k.target && k.target >= min && k.target <= max) {
+    const gy = y(k.target).toFixed(1);
+    goal = '<line x1="' + padL + '" y1="' + gy + '" x2="' + (W - padR) + '" y2="' + gy + '" class="wt-goal"/>' +
+      '<text x="' + (W - padR) + '" y="' + (y(k.target) - 5).toFixed(1) + '" class="chart-tick" text-anchor="end">Ziel ' + k.target.toLocaleString('de-DE') + '</text>';
+  }
+
+  const rawPath = ws.map(function (w, i) { return (i === 0 ? 'M' : 'L') + x(i).toFixed(1) + ' ' + y(w.kg).toFixed(1); }).join(' ');
+  const trendPath = k.trend.map(function (v, i) { return (i === 0 ? 'M' : 'L') + x(i).toFixed(1) + ' ' + y(v).toFixed(1); }).join(' ');
+
+  let dots = '';
+  ws.forEach(function (w, i) {
+    const sel = i === selIdx;
+    dots += '<circle cx="' + x(i).toFixed(1) + '" cy="' + y(w.kg).toFixed(1) + '" r="' + (sel ? 5.5 : 3.5) + '" class="wt-dot' + (sel ? ' sel' : '') + (w.flags && w.flags.length ? ' flagged' : '') + '"/>' +
+      '<circle cx="' + x(i).toFixed(1) + '" cy="' + y(w.kg).toFixed(1) + '" r="14" class="chart-hit" data-action="weight-dot" data-i="' + i + '"/>';
+  });
+
+  function shortD(iso) { return iso.slice(8, 10) + '.' + iso.slice(5, 7) + '.'; }
+  let xlab = '<text x="' + padL + '" y="' + (H - 6) + '" class="chart-tick" text-anchor="start">' + shortD(t0) + '</text>';
+  if (ws.length >= 5) {
+    const mid = Math.floor((ws.length - 1) / 2);
+    xlab += '<text x="' + x(mid).toFixed(1) + '" y="' + (H - 6) + '" class="chart-tick" text-anchor="middle">' + shortD(ws[mid].date) + '</text>';
+  }
+  if (ws.length > 1) xlab += '<text x="' + (W - padR) + '" y="' + (H - 6) + '" class="chart-tick" text-anchor="end">' + shortD(t1) + '</text>';
+
+  const labels =
+    '<text x="' + x(0).toFixed(1) + '" y="' + (y(ws[0].kg) - 9).toFixed(1) + '" class="chart-label" text-anchor="start">' + fmtW(ws[0].kg) + '</text>' +
+    (ws.length > 1 ? '<text x="' + x(ws.length - 1).toFixed(1) + '" y="' + (y(ws[ws.length - 1].kg) - 9).toFixed(1) + '" class="chart-label strong" text-anchor="end">' + fmtW(ws[ws.length - 1].kg) + '</text>' : '');
+
+  return '<svg viewBox="0 0 ' + W + ' ' + H + '" class="wt-chart" role="img" aria-label="Gewichtsverlauf: Messwerte, geglätteter Trend' + (k.target ? ' und Zielgewicht' : '') + '">' +
+    grid + goal +
+    '<path d="' + rawPath + '" class="wt-raw"/>' +
+    '<path d="' + trendPath + '" class="wt-trend"/>' +
+    dots + labels + xlab +
+    '</svg>';
+}
+
+/* Kompletter Gewichts-Bereich für die Verlauf-Ansicht */
+function renderWeightSection() {
+  const monIso = isoOf(mondayOfCurrentWeek());
+  const thisWeek = weightEntryForWeek(monIso);
+  let html = '<div class="section-title">Körpergewicht</div>';
+
+  if (state.weights.length === 0) {
+    return html +
+      '<div class="card">' +
+      '<h3>Noch kein Gewichtsverlauf vorhanden</h3>' +
+      '<p class="sub" style="margin-top:6px">Trage dein Gewicht ein, um deine langfristige Entwicklung zu sehen. Am besten jeden Montag: morgens, nach dem Toilettengang, vor dem Essen, immer mit derselben Waage.</p>' +
+      '<div class="btn-row"><button class="btn btn-primary" data-action="weight-open">⚖️ Gewicht eintragen</button></div>' +
+      '</div>';
+  }
+
+  const k = weightKpis();
+  const st = weightStatus(k);
+
+  const kpis =
+    '<div class="mini-stats">' +
+    '<div><span class="ms-num">' + (k.diffTotal > 0 ? '+' : '') + k.diffTotal.toLocaleString('de-DE') + ' kg</span><span class="ms-lbl">seit Beginn (' + (k.diffPct > 0 ? '+' : '') + k.diffPct.toLocaleString('de-DE') + ' %)</span></div>' +
+    '<div><span class="ms-num">' + (k.diffLast === null ? '–' : (k.diffLast > 0 ? '+' : '') + k.diffLast.toLocaleString('de-DE') + ' kg') + '</span><span class="ms-lbl">seit letztem Eintrag</span></div>' +
+    '<div><span class="ms-num">' + (k.perWeek === null ? '–' : (k.perWeek > 0 ? '+' : '') + k.perWeek.toLocaleString('de-DE') + ' kg') + '</span><span class="ms-lbl">Ø pro Woche</span></div>' +
+    '<div><span class="ms-num">' + k.count + '</span><span class="ms-lbl">' + (k.count === 1 ? 'Woche erfasst' : 'Wochen erfasst') + '</span></div>' +
+    '<div><span class="ms-num">' + (k.slope4 === null ? '–' : (k.slope4 > 0 ? '+' : '') + k.slope4.toLocaleString('de-DE') + ' kg') + '</span><span class="ms-lbl">Trend/Woche (4 Wo)</span></div>' +
+    '<div><span class="ms-num">' + (k.target ? ((k.tLast - k.target > 0 ? '+' : '') + (Math.round((k.tLast - k.target) * 10) / 10).toLocaleString('de-DE') + ' kg') : '–') + '</span><span class="ms-lbl">bis zum Ziel</span></div>' +
+    '</div>';
+
+  const chart = state.weights.length >= 2
+    ? weightChartSVG(k, wtSelIdx)
+    : '<p class="sub" style="margin:10px 0">Erster Eintrag gespeichert (' + fmtW(k.first.kg) + '). Ab dem zweiten Eintrag siehst du hier deine Kurve. 📈</p>';
+
+  let selInfo = '';
+  if (wtSelIdx !== null && state.weights[wtSelIdx]) {
+    const sw = state.weights[wtSelIdx];
+    const flagTxt = (sw.flags || []).map(function (f) {
+      const def = WEIGHT_FLAGS.find(function (x) { return x.id === f; });
+      return def ? def.label : '';
+    }).filter(Boolean).join(', ');
+    selInfo = '<p class="chart-info">' + fmtDate(sw.date) + ': ' + fmtW(sw.kg) +
+      (flagTxt ? ' · ' + esc(flagTxt) : '') + (sw.note ? ' · „' + esc(sw.note) + '"' : '') + '</p>';
+  }
+
+  let targetLine = '';
+  if (k.target) {
+    const done = Math.round((k.first.kg - k.tLast) * 10) / 10;
+    const total = Math.round((k.first.kg - k.target) * 10) / 10;
+    if (total > 0) {
+      const pct = Math.max(0, Math.min(100, Math.round((done / total) * 100)));
+      targetLine = '<p class="sub" style="margin-top:8px">🎯 Start ' + fmtW(k.first.kg) + ' → Trend ' + fmtW(k.tLast) + ' → Ziel ' + fmtW(k.target) + ': <b>' + pct + ' % geschafft</b>. Ohne Termindruck: der Trend zählt, nicht das Datum.</p>';
+    }
+  }
+
+  /* Vorsichtiger Trainings-Hinweis NUR bei längerem Trend + Leistungssignal */
+  let energyHint = '';
+  if (k.slope4 !== null && k.slope4 <= -0.5 && state.logs.length) {
+    const lastLog = state.logs[state.logs.length - 1];
+    const weak = Array.isArray(lastLog.results) ? lastLog.results.filter(function (r) { return r.verdict === 'down' || r.verdict === 'hold-low'; }).length : 0;
+    if (weak >= 2) {
+      energyHint = '<p class="fatigue-line">Dein Gewicht sinkt zügig, während deine Trainingsleistung zuletzt nachließ. Prüfe Schlaf, Regeneration und Energiezufuhr.</p>';
+    }
+  }
+
+  const listRows = state.weights.slice().reverse().map(function (w) {
+    const flagIcons = (w.flags || []).map(function (f) {
+      const def = WEIGHT_FLAGS.find(function (x) { return x.id === f; });
+      return def ? def.label.split(' ')[0] : '';
+    }).join(' ');
+    return '<div class="wt-row">' +
+      '<div class="wt-row-main"><b>' + fmtW(w.kg) + '</b><span class="sub"> · ' + fmtDate(w.date) + (flagIcons ? ' ' + flagIcons : '') + '</span>' +
+      (w.note ? '<div class="sub wt-note">„' + esc(w.note) + '"</div>' : '') + '</div>' +
+      '<button class="swap-btn" data-action="weight-edit" data-id="' + esc(w.id) + '" title="Eintrag bearbeiten" aria-label="Eintrag vom ' + fmtDate(w.date) + ' bearbeiten">✏️</button>' +
+      '<button class="swap-btn wt-del" data-action="weight-del" data-id="' + esc(w.id) + '" title="Eintrag löschen" aria-label="Eintrag vom ' + fmtDate(w.date) + ' löschen">🗑</button>' +
+      '</div>';
+  }).join('');
+
+  html +=
+    '<div class="card">' +
+    '<p class="sub">' + (thisWeek
+      ? '✓ Diese Woche eingetragen: <b>' + fmtW(thisWeek.kg) + '</b>'
+      : 'Diese Woche noch kein Eintrag: am besten montags wiegen.') + '</p>' +
+    kpis +
+    '<p class="wt-status wt-' + st.cls + '"><b>' + st.label + '</b><br><span class="sub">' + st.sub + '</span></p>' +
+    chart +
+    selInfo +
+    (state.weights.length >= 2 ? '<p class="chart-info">Dünne Linie = Messwerte · kräftige Linie = Trend (Durchschnitt der letzten 3 Messungen) · Punkt antippen für Details</p>' : '') +
+    targetLine +
+    energyHint +
+    '<div class="btn-row" style="margin-top:12px">' +
+    '<button class="btn ' + (thisWeek ? 'btn-ghost' : 'btn-primary') + '" data-action="weight-open">⚖️ Gewicht eintragen</button>' +
+    '</div>' +
+    '<div class="wt-target-row">' +
+    '<span class="sub">Zielgewicht (optional):</span>' +
+    '<span class="bw-wrap"><input type="number" class="bw-input" id="wt-target" min="30" max="300" step="0.5" value="' + (k.target || '') + '" placeholder="–" aria-label="Zielgewicht in Kilogramm"> kg</span>' +
+    '<button class="btn btn-ghost small" data-action="weight-target-save">Speichern</button>' +
+    '</div>' +
+    '<button class="collapse-head" data-action="toggle-wt-list" aria-expanded="' + (wtListOpen ? 'true' : 'false') + '" style="margin-top:12px">' +
+    '<span class="head-text"><span class="col-title">Alle Einträge (' + k.count + ')</span></span><span class="chev">▾</span></button>' +
+    '<div class="collapse-body' + (wtListOpen ? '' : ' closed') + '">' + listRows +
+    '<p class="sub" style="margin-top:10px">Normal sind Schwankungen von 1-2 kg von Tag zu Tag (Wasser, Salz, Speicher, Verdauung). Deshalb zählt die Trendlinie, nicht der einzelne Wert.</p>' +
+    '</div>' +
+    '</div>';
+  return html;
+}
+
 function renderVerlauf() {
   const view = document.getElementById('view-verlauf');
   const todayIso = todayISO();
@@ -1381,6 +1686,9 @@ function renderVerlauf() {
     '<div class="stat"><div class="num">' + (volume > 0 ? fmtVolume(volume) : '0 kg') + '</div><div class="lbl">Gesamt gestemmt</div></div>' +
     '<div class="stat"><div class="num" data-count="' + prs + '">0</div><div class="lbl">Rekorde</div></div>' +
     '</div>';
+
+  /* Körpergewicht: wöchentlicher Check-in mit Trend */
+  html += renderWeightSection();
 
   /* Wochen-Chart: Trainingshäufigkeit bzw. Volumen pro Woche */
   if (state.logs.length > 0) {
@@ -1688,9 +1996,9 @@ function exportData() {
     dataVersion: state.version || CURRENT_DATA_VERSION,
     appVersion: BRAND.version,
     exportedAt: new Date().toISOString(),
-    counts: { logs: state.logs.length },
+    counts: { logs: state.logs.length, weights: state.weights.length },
     /* draft (laufendes Training) ist flüchtig und gehört nicht ins Backup */
-    state: { version: state.version, mode: state.mode, plans: state.plans, logs: state.logs, settings: state.settings, draft: null }
+    state: { version: state.version, mode: state.mode, plans: state.plans, logs: state.logs, weights: state.weights, settings: state.settings, draft: null }
   };
   downloadFile('stemma-backup-' + todayISO() + '.json', JSON.stringify(backup, null, 2), 'application/json');
   toast('Backup heruntergeladen ✓');
@@ -1782,6 +2090,20 @@ function validateBackupState(p) {
       if (!Array.isArray(l.entries)) errors.push('Verlaufs-Eintrag ' + (i + 1) + ': Übungsdaten fehlen.');
     });
   }
+  if (p.weights !== undefined) {
+    if (!Array.isArray(p.weights)) {
+      errors.push('Der Gewichts-Verlauf ist beschädigt.');
+    } else {
+      p.weights.forEach(function (w, i) {
+        if (!w || typeof w !== 'object' || typeof w.date !== 'string' || !/^\d{4}-\d{2}-\d{2}$/.test(w.date)) {
+          errors.push('Gewichts-Eintrag ' + (i + 1) + ': ungültiges Datum.');
+          return;
+        }
+        const kg = numOrNull(w.kg);
+        if (kg === null || kg < 30 || kg > 300) errors.push('Gewichts-Eintrag ' + (i + 1) + ': ungültiger Wert.');
+      });
+    }
+  }
   if (p.settings === undefined || p.settings === null || typeof p.settings !== 'object') {
     warnings.push('Einstellungen fehlen im Backup: Standardwerte werden gesetzt.');
   }
@@ -1798,6 +2120,7 @@ function validateBackupState(p) {
   }
   const stats = {
     logs: Array.isArray(p.logs) ? Math.min(p.logs.length, 5000) : 0,
+    weights: Array.isArray(p.weights) ? Math.min(p.weights.length, 1000) : 0,
     days3: (p.plans && p.plans['3x'] && Array.isArray(p.plans['3x'].days)) ? p.plans['3x'].days.length : 0,
     days5: (p.plans && p.plans['5x'] && Array.isArray(p.plans['5x'].days)) ? p.plans['5x'].days.length : 0,
     firstDate: first,
@@ -1896,10 +2219,38 @@ function sanitizeSettings(s) {
       ? s.pausedWeeks.filter(function (w) { return typeof w === 'string' && /^\d{4}-\d{2}-\d{2}$/.test(w); }).slice(0, 260)
       : [],
     showStreak: s.showStreak !== false,
+    targetWeightKg: (function () {
+      const t = numOrNull(s.targetWeightKg);
+      return (t !== null && t >= 30 && t <= 300) ? Math.round(t * 10) / 10 : null;
+    })(),
     goal: asStr(s.goal, 30) || 'fitness',
     experience: asStr(s.experience, 30) || 'wiedereinstieg',
     location: s.location === 'zuhause' ? 'zuhause' : 'gym'
   };
+}
+
+function sanitizeWeights(arr) {
+  if (!Array.isArray(arr)) return [];
+  const flagIds = WEIGHT_FLAGS.map(function (f) { return f.id; });
+  return arr.slice(-1000).map(function (w) {
+    w = (w && typeof w === 'object') ? w : {};
+    const parsed = num(w.kg); /* versteht Punkt UND Komma */
+    const kg = isNaN(parsed) ? null : parsed;
+    const out = {
+      id: asStr(w.id, 40) || uid(),
+      date: (typeof w.date === 'string' && /^\d{4}-\d{2}-\d{2}$/.test(w.date)) ? w.date : '',
+      kg: (kg !== null) ? Math.round(kg * 10) / 10 : null
+    };
+    const note = asStr(w.note, 120).trim();
+    if (note) out.note = note;
+    if (Array.isArray(w.flags)) {
+      const f = w.flags.filter(function (x) { return flagIds.indexOf(x) !== -1; }).slice(0, flagIds.length);
+      if (f.length) out.flags = f;
+    }
+    return out;
+  }).filter(function (w) {
+    return w.date && w.kg !== null && w.kg >= 30 && w.kg <= 300;
+  }).sort(function (a, b) { return a.date < b.date ? -1 : 1; });
 }
 
 function sanitizeStateForImport(p) {
@@ -1911,6 +2262,7 @@ function sanitizeStateForImport(p) {
       '5x': { label: asStr(p.plans['5x'].label, 40) || '5x', days: p.plans['5x'].days.slice(0, 7).map(sanitizeDay) }
     },
     logs: p.logs.slice(-5000).map(sanitizeLog),
+    weights: sanitizeWeights(p.weights),
     settings: sanitizeSettings(p.settings),
     draft: null
   };
@@ -1939,6 +2291,7 @@ function showImportPreview(meta, stats, warnings) {
     ['Erstellt am', meta.exportedAt ? fmtDate(meta.exportedAt.slice(0, 10)) : 'unbekannt (älteres Format)'],
     ['Datenformat', 'Version ' + meta.dataVersion + (meta.legacy ? ' (altes Backup)' : '')],
     ['Trainings', String(stats.logs)],
+    ['Gewichts-Einträge', String(stats.weights || 0)],
     ['Pläne', stats.days3 + ' Tage (Ganzkörper) + ' + stats.days5 + ' Tage (5er-Split)'],
     ['Zeitraum', stats.firstDate ? (fmtDate(stats.firstDate) + ' bis ' + fmtDate(stats.lastDate)) : 'keine Trainings enthalten']
   ];
@@ -2194,6 +2547,89 @@ function applyOnboarding(d) {
 
 /* ===== Technik-Infos für Fehlerberichte (nur Geräte-/Versionsdaten) ===== */
 
+/* ===== Gewichts-Dialog (neu anlegen oder bearbeiten) ===== */
+
+function showWeightModal(editId) {
+  const w = editId ? state.weights.find(function (x) { return x.id === editId; }) : null;
+  weightModalFlags = (w && Array.isArray(w.flags)) ? w.flags.slice() : [];
+  const tIso = todayISO();
+  const flagChips = WEIGHT_FLAGS.map(function (f) {
+    return '<button class="chip' + (weightModalFlags.indexOf(f.id) !== -1 ? ' active' : '') + '" data-action="weight-flag" data-f="' + f.id + '">' + f.label + '</button>';
+  }).join('');
+  const root = document.getElementById('modal-root');
+  root.innerHTML =
+    '<div class="modal-backdrop" data-action="close-modal">' +
+    '<div class="modal-sheet" data-action="noop">' +
+    '<h3>' + (w ? 'Gewichts-Eintrag bearbeiten' : 'Gewicht eintragen') + '</h3>' +
+    '<p class="sub" style="margin-top:6px">Vergleichbare Bedingungen: morgens, nach dem Toilettengang, vor dem Essen und Trinken, möglichst ohne Kleidung, immer dieselbe Waage.</p>' +
+    '<div class="wt-form-row"><label class="sub" for="wt-date">Datum</label>' +
+    '<input type="date" id="wt-date" class="wt-input" max="' + tIso + '" value="' + (w ? w.date : tIso) + '"></div>' +
+    '<div class="wt-form-row"><label class="sub" for="wt-kg">Gewicht (kg)</label>' +
+    '<input type="text" id="wt-kg" class="wt-input" inputmode="decimal" autocomplete="off" placeholder="z. B. 98,5" value="' + (w ? String(w.kg).replace('.', ',') : '') + '"></div>' +
+    '<p class="sub" style="margin-top:10px">Besondere Umstände heute? (optional, erklärt Ausreißer)</p>' +
+    '<div class="chip-row" style="margin-top:8px">' + flagChips + '</div>' +
+    '<div class="wt-form-row"><label class="sub" for="wt-note">Notiz (optional)</label>' +
+    '<input type="text" id="wt-note" class="wt-input" maxlength="120" placeholder="z. B. nach dem Urlaub" value="' + (w && w.note ? esc(w.note) : '') + '"></div>' +
+    '<button class="btn btn-primary" data-action="weight-save" data-edit="' + (editId || '') + '" style="margin-top:14px">Speichern</button>' +
+    '<button class="btn btn-ghost" data-action="close-modal" style="margin-top:10px">Abbrechen</button>' +
+    '</div></div>';
+  root.classList.add('open');
+}
+
+function saveWeightFromModal(editId) {
+  const dateEl = document.getElementById('wt-date');
+  const kgEl = document.getElementById('wt-kg');
+  const noteEl = document.getElementById('wt-note');
+  if (!dateEl || !kgEl) return;
+
+  const kg = num(kgEl.value);
+  if (isNaN(kg)) { toast('Bitte ein Gewicht eingeben'); return; }
+  if (kg < 30 || kg > 300) { toast('Bitte einen Wert zwischen 30 und 300 kg eingeben'); return; }
+
+  let date = dateEl.value;
+  if (!date || !/^\d{4}-\d{2}-\d{2}$/.test(date)) date = todayISO();
+  if (date > todayISO()) { toast('Das Datum liegt in der Zukunft'); return; }
+
+  const kgR = Math.round(kg * 10) / 10;
+
+  /* Plausibilität: großer Sprung zum letzten Eintrag → nachfragen statt stumm speichern */
+  const others = state.weights.filter(function (x) { return x.id !== editId; });
+  const prev = others.length ? others[others.length - 1] : null;
+  if (prev && Math.abs(kgR - prev.kg) > Math.max(3, prev.kg * 0.05)) {
+    const diff = Math.round(Math.abs(kgR - prev.kg) * 10) / 10;
+    if (!confirm('Das sind ' + diff.toLocaleString('de-DE') + ' kg Unterschied zum letzten Eintrag (' + fmtW(prev.kg) + '). Stimmt der Wert?')) return;
+  }
+
+  /* Ein regulärer Wert pro Kalenderwoche: vorhandenen Eintrag bewusst ersetzen */
+  const weekMon = mondayIsoOf(date);
+  const existing = others.find(function (x) { return mondayIsoOf(x.date) === weekMon; });
+  let target = null;
+  if (editId) target = state.weights.find(function (x) { return x.id === editId; });
+  if (existing && (!target || existing.id !== target.id)) {
+    if (!confirm('Für diese Woche gibt es schon einen Eintrag (' + fmtW(existing.kg) + ' vom ' + fmtDate(existing.date) + '). Soll er ersetzt werden?')) return;
+    target = existing;
+  }
+
+  const note = asStr(noteEl ? noteEl.value : '', 120).trim();
+  if (!target) {
+    target = { id: uid() };
+    state.weights.push(target);
+  }
+  target.date = date;
+  target.kg = kgR;
+  if (note) target.note = note; else delete target.note;
+  if (weightModalFlags.length) target.flags = weightModalFlags.slice(0, WEIGHT_FLAGS.length); else delete target.flags;
+
+  state.weights.sort(function (a, b) { return a.date < b.date ? -1 : 1; });
+  /* Kalorien-Schätzung nutzt ab jetzt das frische Gewicht */
+  state.settings.bodyWeight = kgR;
+  wtSelIdx = null;
+  saveState();
+  closeModal();
+  rerender();
+  toast('⚖️ Gespeichert: ' + fmtW(kgR));
+}
+
 function buildDiagInfo() {
   const standalone = !!(window.matchMedia && window.matchMedia('(display-mode: standalone)').matches) || (navigator.standalone === true);
   return [
@@ -2427,6 +2863,51 @@ function handleAction(action, el) {
       en.lastRir = (en.lastRir === el.dataset.v) ? null : el.dataset.v;
       saveState();
       renderWorkout();
+      break;
+    }
+    case 'weight-open': showWeightModal(''); break;
+    case 'weight-edit': showWeightModal(el.dataset.id); break;
+    case 'weight-save': saveWeightFromModal(el.dataset.edit || ''); break;
+    case 'weight-flag': {
+      const f = el.dataset.f;
+      const fi = weightModalFlags.indexOf(f);
+      if (fi !== -1) weightModalFlags.splice(fi, 1); else weightModalFlags.push(f);
+      el.classList.toggle('active');
+      break;
+    }
+    case 'weight-del': {
+      const w = state.weights.find(function (x) { return x.id === el.dataset.id; });
+      if (!w) break;
+      if (!confirm('Gewichts-Eintrag vom ' + fmtDate(w.date) + ' (' + fmtW(w.kg) + ') löschen?')) break;
+      state.weights = state.weights.filter(function (x) { return x.id !== el.dataset.id; });
+      wtSelIdx = null;
+      saveState();
+      rerender();
+      toast('Eintrag gelöscht');
+      break;
+    }
+    case 'weight-dot':
+      wtSelIdx = wtSelIdx === parseInt(el.dataset.i, 10) ? null : parseInt(el.dataset.i, 10);
+      renderVerlauf();
+      break;
+    case 'toggle-wt-list':
+      wtListOpen = !wtListOpen;
+      renderVerlauf();
+      break;
+    case 'weight-target-save': {
+      const inp = document.getElementById('wt-target');
+      if (!inp) break;
+      if (inp.value === '' || inp.value === null) {
+        state.settings.targetWeightKg = null;
+        toast('Zielgewicht entfernt');
+      } else {
+        const tv = num(inp.value);
+        if (isNaN(tv) || tv < 30 || tv > 300) { toast('Bitte ein Ziel zwischen 30 und 300 kg (oder leer lassen)'); break; }
+        state.settings.targetWeightKg = Math.round(tv * 10) / 10;
+        toast('🎯 Zielgewicht: ' + fmtW(state.settings.targetWeightKg));
+      }
+      saveState();
+      renderVerlauf();
       break;
     }
     case 'rir-hint-ok':
