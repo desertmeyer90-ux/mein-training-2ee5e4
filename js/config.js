@@ -11,7 +11,7 @@ const BRAND = {
   name: 'Stemma',
   claim: 'Du stemmst das.',
   subtitle: 'Training & Fortschritt',
-  version: 'v7.3-beta'
+  version: 'v7.4-beta'
 };
 
 /* Einheiten: 'kg' aktiv; 'lbs' ist vorbereitet und läuft
