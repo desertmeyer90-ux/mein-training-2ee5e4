@@ -9,7 +9,7 @@
    ===================================================== */
 
 const STORAGE_KEY = 'mein-training-v1';
-const CURRENT_DATA_VERSION = 8;   /* Version des gespeicherten Datenformats (v8: + weights) */
+const CURRENT_DATA_VERSION = 9;   /* Version des gespeicherten Datenformats (v8: + weights, v9: + rot/Rest-Days) */
 const BACKUP_FORMAT_VERSION = 1;  /* Version der Backup-Datei-Hülle */
 const PREIMPORT_KEY = STORAGE_KEY + '-vor-import';
 const MAX_IMPORT_BYTES = 10 * 1024 * 1024;
@@ -230,6 +230,17 @@ function loadState() {
   });
   s.weights.sort(function (a, b) { return a.date < b.date ? -1 : 1; });
 
+  /* Migration v9 (16.07.2026): rotierender Plan + zusätzliche Rest Days.
+     Rückwärtskompatibel: fehlt das Feld, wird es leer angelegt. */
+  if (!s.rot || typeof s.rot !== 'object' || Array.isArray(s.rot)) s.rot = {};
+  if (!Array.isArray(s.rot.rests)) s.rot.rests = [];
+  s.rot.rests = s.rot.rests.filter(function (r) {
+    return r && typeof r === 'object' &&
+      typeof r.date === 'string' && /^\d{4}-\d{2}-\d{2}$/.test(r.date) &&
+      typeof r.dayId === 'string';
+  }).slice(-400);
+  s.rot.rests.sort(function (a, b) { return a.date < b.date ? -1 : 1; });
+
   /* Angefangenes Training nur am selben Tag fortsetzen */
   if (s.draft && s.draft.date !== todayISO()) s.draft = null;
 
@@ -240,6 +251,7 @@ function loadState() {
   if (typeof s.settings.timerSound !== 'boolean') s.settings.timerSound = true;
   if (typeof s.settings.rirHintSeen !== 'boolean') s.settings.rirHintSeen = false;
   if (typeof s.settings.targetWeightKg !== 'number' || isNaN(s.settings.targetWeightKg) || s.settings.targetWeightKg < 30 || s.settings.targetWeightKg > 300) s.settings.targetWeightKg = null;
+  if (typeof s.settings.rotationMode !== 'boolean') s.settings.rotationMode = false;
   if (typeof s.settings.bodyWeight !== 'number' || isNaN(s.settings.bodyWeight)) s.settings.bodyWeight = 80;
   if (typeof s.settings.onboarded !== 'boolean') s.settings.onboarded = false;
   ['3x', '5x'].forEach(function (k) {
@@ -413,20 +425,68 @@ function trainingDaysInWeek(mondayDate) {
   return distinctLogDates(isoOf(mondayDate), isoOf(sun)).length;
 }
 
+/* ===== Rotierender Plan + zusätzliche Rest Days ===== */
+
+/* Nächste offene Einheit: die Einheit NACH der zuletzt absolvierten,
+   in der Reihenfolge des Plans, unabhängig vom Wochentag. Nichts wird
+   kopiert oder übersprungen: ein Rest Day lässt dieselbe Einheit einfach
+   auf den nächsten Tag rücken. */
+function rotDue() {
+  const plan = currentPlan();
+  if (!plan.days.length) return null;
+  let idx = -1;
+  for (let i = state.logs.length - 1; i >= 0; i--) {
+    const l = state.logs[i];
+    if (l.mode && l.mode !== state.mode) continue;
+    for (let j = 0; j < plan.days.length; j++) {
+      if (plan.days[j].id === l.dayId) { idx = j; break; }
+    }
+    if (idx !== -1) break;
+  }
+  const nextIdx = idx === -1 ? 0 : (idx + 1) % plan.days.length;
+  return plan.days[nextIdx];
+}
+
+function restForDate(iso) {
+  for (let i = state.rot.rests.length - 1; i >= 0; i--) {
+    if (state.rot.rests[i].date === iso) return state.rot.rests[i];
+  }
+  return null;
+}
+
+function restReasonLabel(id) {
+  const r = REST_REASONS.find(function (x) { return x.id === id; });
+  return r ? r.label : '';
+}
+
+/* Zusätzliche Rest Days einer Kalenderwoche (für die faire Serien-Wertung) */
+function extraRestsInWeek(mondayDate) {
+  const sun = new Date(mondayDate);
+  sun.setDate(mondayDate.getDate() + 6);
+  const mi = isoOf(mondayDate), si = isoOf(sun);
+  return state.rot.rests.filter(function (r) { return r.date >= mi && r.date <= si; }).length;
+}
+
+/* Wochenziel einer konkreten Woche: bewusste Rest Days senken das Ziel,
+   statt als versäumtes Training zu zählen (nie unter 1). */
+function effTargetForWeek(mondayDate) {
+  return Math.max(1, getWeeklyTarget() - extraRestsInWeek(mondayDate));
+}
+
 /* Wochen-Serie: wie viele Wochen in Folge wurde das Wochenziel erreicht?
    Die laufende Woche zählt mit, sobald sie erfüllt ist, bricht die Serie
-   aber nicht ab, solange sie noch läuft. */
+   aber nicht ab, solange sie noch läuft. Bewusste Rest Days senken das
+   Ziel der jeweiligen Woche (siehe effTargetForWeek). */
 function weekStreak() {
-  const target = getWeeklyTarget();
   const paused = state.settings.pausedWeeks || [];
   const mon = mondayOfCurrentWeek();
   let streak = 0;
-  if (paused.indexOf(isoOf(mon)) === -1 && trainingDaysInWeek(mon) >= target) streak++;
+  if (paused.indexOf(isoOf(mon)) === -1 && trainingDaysInWeek(mon) >= effTargetForWeek(mon)) streak++;
   for (let w = 1; w < 520; w++) {
     const m = new Date(mon);
     m.setDate(mon.getDate() - 7 * w);
     if (paused.indexOf(isoOf(m)) !== -1) continue; /* Pausenwoche zählt neutral */
-    if (trainingDaysInWeek(m) >= target) streak++;
+    if (trainingDaysInWeek(m) >= effTargetForWeek(m)) streak++;
     else break;
   }
   return streak;
@@ -465,6 +525,18 @@ const mehrOpen = { rir: false, wissen: false, schutz: false, gefahr: false }; /*
 let wtSelIdx = null;                 /* ausgewählter Punkt im Gewichts-Chart */
 let wtListOpen = false;              /* Einträge-Liste im Gewichts-Bereich auf/zu */
 let weightModalFlags = [];           /* gewählte Umstände im Gewichts-Dialog */
+
+let restModalReason = '';            /* gewählter Grund im Rest-Day-Dialog */
+
+/* Gründe für einen zusätzlichen Rest Day (optional, KEINE Diagnose) */
+const REST_REASONS = [
+  { id: 'kater', label: '💪 Muskelkater' },
+  { id: 'erschoepft', label: '🥱 Erschöpfung' },
+  { id: 'schlaf', label: '😴 Schlafmangel' },
+  { id: 'schmerz', label: '⚠️ Schmerzen / Beschwerden' },
+  { id: 'zeit', label: '⏰ Zeitmangel' },
+  { id: 'sonst', label: '📝 Sonstiger Grund' }
+];
 
 /* Besondere Umstände beim Wiegen (rein optional, erklären Ausreißer) */
 const WEIGHT_FLAGS = [
@@ -546,25 +618,30 @@ function renderHeute() {
     const iso = isoOf(d);
     weekIsos.push(iso);
     const trained = state.logs.some(function (l) { return l.date === iso; });
-    const isTrainDay = plan.days.some(function (x) { return x.weekday === i; });
+    const isTrainDay = state.settings.rotationMode
+      ? (iso === todayIso && !trained && !restForDate(todayIso)) /* Rotation: nur „heute fällig" markieren */
+      : plan.days.some(function (x) { return x.weekday === i; });
     const cls = 'wday' + (iso === todayIso ? ' today' : '') + (trained ? ' done' : '');
     strip += '<div class="' + cls + '"><span class="wl">' + WEEKDAYS_SHORT[i] + '</span><span class="wd">' + d.getDate() + '</span>' +
       (trained ? '<span class="wcheck">✓</span>' : (isTrainDay ? '<span class="wdot"></span>' : '')) + '</div>';
   }
   strip += '</div>';
 
-  /* Wochenfortschritt */
+  /* Wochenfortschritt (bewusste Rest Days senken das Ziel dieser Woche) */
   const target = getWeeklyTarget();
+  const restsWeek = extraRestsInWeek(monday);
+  const effTarget = Math.max(1, target - restsWeek);
   const doneCount = weekIsos.filter(function (iso) {
     return state.logs.some(function (l) { return l.date === iso; });
   }).length;
-  const pct = Math.min(100, Math.round((doneCount / target) * 100));
+  const pct = Math.min(100, Math.round((doneCount / effTarget) * 100));
   const streak = weekStreak();
   const isPausedWeek = (state.settings.pausedWeeks || []).indexOf(isoOf(monday)) !== -1;
   const progress =
     '<div class="progress-wrap">' +
-    '<div class="progress-label"><span>Diese Woche</span><span>' + doneCount + ' von ' + target + ' Trainings</span></div>' +
-    '<div class="progress-bar"><div class="progress-fill' + (doneCount >= target ? ' full' : '') + '" style="width:' + pct + '%"></div></div>' +
+    '<div class="progress-label"><span>Diese Woche</span><span>' + doneCount + ' von ' + effTarget + ' Trainings</span></div>' +
+    '<div class="progress-bar"><div class="progress-fill' + (doneCount >= effTarget ? ' full' : '') + '" style="width:' + pct + '%"></div></div>' +
+    (restsWeek > 0 ? '<p class="streak-line">🛌 ' + restsWeek + (restsWeek === 1 ? ' Rest Day' : ' Rest Days') + ' diese Woche eingeplant: dein Ziel ist entsprechend angepasst.</p>' : '') +
     (isPausedWeek ? '<p class="streak-line">⏸ Diese Woche ist als Pause markiert: deine Serie bleibt erhalten.</p>' : '') +
     (state.settings.showStreak && streak > 0 && !isPausedWeek ? '<p class="streak-line">🔥 Serie: ' + streak + (streak === 1 ? ' Woche' : ' Wochen') + ' in Folge das Wochenziel erreicht</p>' : '') +
     '</div>';
@@ -593,13 +670,56 @@ function renderHeute() {
       '</div>';
   } else if (logsToday.length > 0) {
     const names = logsToday.map(function (l) { return esc(l.dayName); }).join(', ');
+    let nextLine = '';
+    if (state.settings.rotationMode) {
+      const due = rotDue();
+      if (due) nextLine = '<p class="sub" style="margin-top:8px">Als Nächstes: <b>' + esc(dayTitle(due)) + '</b> · morgen</p>';
+    }
     mainCard =
       '<div class="card success-card">' +
       '<span class="badge green">✓ Erledigt</span>' +
       '<h2>Heute schon trainiert!</h2>' +
       '<p class="sub">' + names + ' ist im Verlauf gespeichert. Stark, dranbleiben!</p>' +
+      nextLine +
       wkStats +
       '</div>';
+  } else if (state.settings.rotationMode) {
+    /* Rotierender Plan: die nächste offene Einheit ist heute fällig,
+       ein zusätzlicher Rest Day lässt sie einfach auf morgen rücken. */
+    const due = rotDue();
+    const restToday = restForDate(todayIso);
+    if (restToday) {
+      const rl = restReasonLabel(restToday.reason);
+      const gentle = (restToday.reason === 'kater' || restToday.reason === 'erschoepft' || restToday.reason === 'schlaf')
+        ? '<p class="rest-tip">Regenerationstag eingeplant. Die nächste offene Einheit wurde auf morgen verschoben: prüfe morgen erneut, ob du dich ausreichend erholt fühlst.</p>'
+        : (restToday.reason === 'schmerz'
+          ? '<p class="rest-tip">⚕️ Bei starken, ungewöhnlichen oder anhaltenden Schmerzen: nicht weitertrainieren und die Ursache professionell prüfen lassen.</p>'
+          : '');
+      mainCard =
+        '<div class="card rest-card">' +
+        '<span class="badge">🛌 Rest Day · heute</span>' +
+        '<h2>Heute ist Erholung dran</h2>' +
+        (rl ? '<p class="sub">Grund: ' + esc(rl) + '</p>' : '') +
+        (due ? '<p class="sub" style="margin-top:6px">Nächste Einheit: <b>' + esc(dayTitle(due)) + '</b><br>Geplant für: morgen</p>' : '') +
+        gentle +
+        '<div class="btn-row"><button class="btn btn-ghost" data-action="rest-undo">Rest Day rückgängig machen</button></div>' +
+        '</div>';
+    } else if (due) {
+      const preview = due.exercises.map(function (e) {
+        return '<li><span>' + esc(e.name) + '</span><span class="reps">' + e.sets + ' × ' + esc(e.reps) + '</span></li>';
+      }).join('');
+      mainCard =
+        '<div class="card highlight">' +
+        '<span class="badge">Als Nächstes · heute</span>' +
+        '<h2>' + esc(dayTitle(due)) + '</h2>' +
+        '<p class="sub">' + due.exercises.length + ' Übungen warten auf dich. Die Reihenfolge deines Splits bleibt immer erhalten.</p>' +
+        '<ul class="ex-preview">' + preview + '</ul>' +
+        '<div class="btn-row"><button class="btn btn-primary pulse" data-action="start-day" data-day="' + due.id + '">Training starten 🔥</button></div>' +
+        '<button class="btn btn-ghost" data-action="rest-open" style="margin-top:10px">🛌 Heute Rest Day machen</button>' +
+        '</div>';
+    } else {
+      mainCard = '<div class="card"><p class="sub">Kein Plan gefunden. Lege im Plan-Editor Übungen an.</p></div>';
+    }
   } else if (todayDay) {
     const preview = todayDay.exercises.map(function (e) {
       return '<li><span>' + esc(e.name) + '</span><span class="reps">' + e.sets + ' × ' + esc(e.reps) + '</span></li>';
@@ -956,6 +1076,19 @@ function renderWorkout() {
     '<button class="chip" data-action="timer" data-sec="120" aria-label="120 Sekunden Pause starten">120 s</button>' +
     '<div class="timer-fill" id="timer-progress"></div>' +
     '</div>';
+
+  /* Sanfter Hinweis nach einem Regenerations-Rest-Day: nur Text,
+     ändert NICHTS an Plan, Gewichten oder Vorgaben */
+  const yesterdayIso = (function () {
+    const d = new Date();
+    d.setDate(d.getDate() - 1);
+    return isoOf(d);
+  })();
+  const yRest = restForDate(yesterdayIso);
+  if (yRest && (yRest.reason === 'kater' || yRest.reason === 'erschoepft' || yRest.reason === 'schlaf' || yRest.reason === 'schmerz')) {
+    html +=
+      '<p class="hint" style="margin-bottom:12px">🛌 Gestern war ein Rest Day. Fühlst du dich noch nicht ganz erholt: heute gern 1-2 Wiederholungen mehr Reserve lassen, kein Muskelversagen bei schweren Übungen, notfalls einen Satz weglassen oder einen weiteren Rest Day einlegen. Bei anhaltenden Schmerzen: nicht weitertrainieren und professionell abklären lassen.</p>';
+  }
 
   /* Einmaliger Ersthinweis zur neuen Belastungs-Zeile */
   if (!state.settings.rirHintSeen) {
@@ -1755,19 +1888,33 @@ function renderVerlauf() {
 
   html += '<div class="section-title">Vergangene Trainings</div>';
 
-  if (state.logs.length === 0) {
+  if (state.logs.length === 0 && state.rot.rests.length === 0) {
     html += '<div class="card"><p class="sub">Noch keine Trainings gespeichert. Dein erstes Training wartet auf dem „Heute"-Tab! 🔥</p></div>';
   } else {
-    const sorted = state.logs.slice().reverse();
+    /* Trainings und zusätzlich eingelegte Rest Days gemeinsam, neueste zuerst.
+       Geplante (implizite) Ruhetage erscheinen bewusst nicht als Einträge. */
+    const items = state.logs.map(function (l) { return { t: 'log', date: l.date, log: l }; })
+      .concat(state.rot.rests.map(function (r) { return { t: 'rest', date: r.date, rest: r }; }));
+    items.sort(function (a, b) { return a.date < b.date ? 1 : (a.date > b.date ? -1 : (a.t === 'log' ? -1 : 1)); });
     let lastMonth = '';
-    sorted.forEach(function (log) {
-      const st = logStats(log);
-      const open = expandedLogId === log.id;
-      const mKey = log.date.slice(0, 7);
+    items.forEach(function (it) {
+      const mKey = it.date.slice(0, 7);
       if (mKey !== lastMonth) {
         lastMonth = mKey;
-        html += '<div class="section-title month-title">' + MONTHS_LONG[parseInt(log.date.slice(5, 7), 10) - 1] + ' ' + log.date.slice(0, 4) + '</div>';
+        html += '<div class="section-title month-title">' + MONTHS_LONG[parseInt(it.date.slice(5, 7), 10) - 1] + ' ' + it.date.slice(0, 4) + '</div>';
       }
+      if (it.t === 'rest') {
+        const rl = restReasonLabel(it.rest.reason);
+        html +=
+          '<div class="card rest-item">' +
+          '<div class="log-summary"><div class="log-left"><span class="rest-ico">🛌</span>' +
+          '<div><h3>Zusätzlicher Rest Day</h3><p class="sub">' + fmtDate(it.date) + ' · ' + relDate(it.date) + (rl ? ' · ' + esc(rl) : '') + '</p></div>' +
+          '</div></div></div>';
+        return;
+      }
+      const log = it.log;
+      const st = logStats(log);
+      const open = expandedLogId === log.id;
       const hasPR = Array.isArray(log.results) && log.results.some(function (r) { return r.isPR; });
       let details = '';
       if (open) {
@@ -1936,6 +2083,10 @@ function renderMehr() {
     modeRow('3x', 'Ganzkörper-Split (3 Tage)', 'Tag A (Brust & Druck), Tag B (Rücken & Zug), Tag C (Beine & Core). Ideal für Einstieg und Wiedereinstieg.') +
     modeRow('5x', '5er-Split (5 Tage)', 'Push / Pull / Beine / Oberkörper / Unterkörper. Für später, wenn der Ganzkörper-Plan locker läuft.') +
     '<p class="sub" style="margin-top:10px">Beide Pläne bleiben gespeichert, dein Verlauf geht beim Umschalten nicht verloren. Wochentage stellst du im Plan-Editor ein.</p>' +
+    '<div class="switch-row" data-action="toggle-rotation" style="margin-top:14px">' +
+    '<div><h3>Rotierender Plan</h3><p class="sub">Die Einheiten folgen ihrer Reihenfolge statt festen Wochentagen. Auf „Heute" kannst du dann jederzeit einen Rest Day einlegen: das fällige Training rutscht einfach auf morgen, nichts geht verloren.</p></div>' +
+    '<span class="switch' + (state.settings.rotationMode ? ' on' : '') + '"></span>' +
+    '</div>' +
     '</div>' +
     /* 5) Einrichtung */
     '<div class="card">' +
@@ -1998,7 +2149,7 @@ function exportData() {
     exportedAt: new Date().toISOString(),
     counts: { logs: state.logs.length, weights: state.weights.length },
     /* draft (laufendes Training) ist flüchtig und gehört nicht ins Backup */
-    state: { version: state.version, mode: state.mode, plans: state.plans, logs: state.logs, weights: state.weights, settings: state.settings, draft: null }
+    state: { version: state.version, mode: state.mode, plans: state.plans, logs: state.logs, weights: state.weights, rot: state.rot, settings: state.settings, draft: null }
   };
   downloadFile('stemma-backup-' + todayISO() + '.json', JSON.stringify(backup, null, 2), 'application/json');
   toast('Backup heruntergeladen ✓');
@@ -2101,6 +2252,17 @@ function validateBackupState(p) {
         }
         const kg = numOrNull(w.kg);
         if (kg === null || kg < 30 || kg > 300) errors.push('Gewichts-Eintrag ' + (i + 1) + ': ungültiger Wert.');
+      });
+    }
+  }
+  if (p.rot !== undefined) {
+    if (!p.rot || typeof p.rot !== 'object' || Array.isArray(p.rot) || (p.rot.rests !== undefined && !Array.isArray(p.rot.rests))) {
+      errors.push('Die Rest-Day-Daten sind beschädigt.');
+    } else if (Array.isArray(p.rot.rests)) {
+      p.rot.rests.forEach(function (r, i) {
+        if (!r || typeof r !== 'object' || typeof r.date !== 'string' || !/^\d{4}-\d{2}-\d{2}$/.test(r.date)) {
+          errors.push('Rest-Day-Eintrag ' + (i + 1) + ': ungültiges Datum.');
+        }
       });
     }
   }
@@ -2219,6 +2381,7 @@ function sanitizeSettings(s) {
       ? s.pausedWeeks.filter(function (w) { return typeof w === 'string' && /^\d{4}-\d{2}-\d{2}$/.test(w); }).slice(0, 260)
       : [],
     showStreak: s.showStreak !== false,
+    rotationMode: s.rotationMode === true,
     targetWeightKg: (function () {
       const t = numOrNull(s.targetWeightKg);
       return (t !== null && t >= 30 && t <= 300) ? Math.round(t * 10) / 10 : null;
@@ -2253,6 +2416,22 @@ function sanitizeWeights(arr) {
   }).sort(function (a, b) { return a.date < b.date ? -1 : 1; });
 }
 
+function sanitizeRot(rot) {
+  rot = (rot && typeof rot === 'object' && !Array.isArray(rot)) ? rot : {};
+  const ids = REST_REASONS.map(function (r) { return r.id; });
+  const rests = (Array.isArray(rot.rests) ? rot.rests : []).slice(-400).map(function (r) {
+    r = (r && typeof r === 'object') ? r : {};
+    const out = {
+      date: (typeof r.date === 'string' && /^\d{4}-\d{2}-\d{2}$/.test(r.date)) ? r.date : '',
+      dayId: asStr(r.dayId, 10)
+    };
+    if (ids.indexOf(r.reason) !== -1) out.reason = r.reason;
+    return out;
+  }).filter(function (r) { return r.date !== ''; });
+  rests.sort(function (a, b) { return a.date < b.date ? -1 : 1; });
+  return { rests: rests };
+}
+
 function sanitizeStateForImport(p) {
   return {
     version: clampInt(p.version, 1, CURRENT_DATA_VERSION, 1),
@@ -2263,6 +2442,7 @@ function sanitizeStateForImport(p) {
     },
     logs: p.logs.slice(-5000).map(sanitizeLog),
     weights: sanitizeWeights(p.weights),
+    rot: sanitizeRot(p.rot),
     settings: sanitizeSettings(p.settings),
     draft: null
   };
@@ -2546,6 +2726,27 @@ function applyOnboarding(d) {
 }
 
 /* ===== Technik-Infos für Fehlerberichte (nur Geräte-/Versionsdaten) ===== */
+
+/* ===== Rest-Day-Dialog (rotierender Plan) ===== */
+
+function showRestModal() {
+  restModalReason = '';
+  const chips = REST_REASONS.map(function (r) {
+    return '<button class="chip" data-action="rest-reason" data-r="' + r.id + '">' + r.label + '</button>';
+  }).join('');
+  const root = document.getElementById('modal-root');
+  root.innerHTML =
+    '<div class="modal-backdrop" data-action="close-modal">' +
+    '<div class="modal-sheet" data-action="noop">' +
+    '<h3>Rest Day einlegen?</h3>' +
+    '<p class="sub" style="margin-top:6px">Das heutige Training wird auf morgen verschoben. Die folgenden Einheiten rücken automatisch entsprechend nach hinten: die Reihenfolge deines Splits bleibt vollständig erhalten, nichts wird gelöscht, übersprungen oder doppelt angelegt.</p>' +
+    '<p class="sub" style="margin-top:10px">Grund (optional, keine Diagnose):</p>' +
+    '<div class="chip-row" style="margin-top:8px">' + chips + '</div>' +
+    '<button class="btn btn-primary" data-action="rest-confirm" style="margin-top:14px">Rest Day bestätigen</button>' +
+    '<button class="btn btn-ghost" data-action="close-modal" style="margin-top:10px">Abbrechen</button>' +
+    '</div></div>';
+  root.classList.add('open');
+}
 
 /* ===== Gewichts-Dialog (neu anlegen oder bearbeiten) ===== */
 
@@ -2865,6 +3066,52 @@ function handleAction(action, el) {
       renderWorkout();
       break;
     }
+    case 'rest-open': showRestModal(); break;
+    case 'rest-reason': {
+      if (restModalReason === el.dataset.r) {
+        restModalReason = '';
+        el.classList.remove('active');
+      } else {
+        restModalReason = el.dataset.r;
+        const row = el.parentElement;
+        if (row) {
+          row.querySelectorAll('.chip').forEach(function (c) { c.classList.remove('active'); });
+        }
+        el.classList.add('active');
+      }
+      break;
+    }
+    case 'rest-confirm': {
+      const due = rotDue();
+      const entry = { date: todayISO(), dayId: due ? due.id : '' };
+      if (restModalReason) entry.reason = restModalReason;
+      state.rot.rests = state.rot.rests.filter(function (r) { return r.date !== entry.date; });
+      state.rot.rests.push(entry);
+      state.rot.rests.sort(function (a, b) { return a.date < b.date ? -1 : 1; });
+      saveState();
+      closeModal();
+      rerender();
+      toast('🛌 Rest Day eingelegt: morgen geht es weiter');
+      break;
+    }
+    case 'rest-undo': {
+      const t = todayISO();
+      if (state.draft || state.logs.some(function (l) { return l.date === t; })) {
+        toast('Heute wurde schon trainiert: nichts zu ändern.');
+        break;
+      }
+      state.rot.rests = state.rot.rests.filter(function (r) { return r.date !== t; });
+      saveState();
+      rerender();
+      toast('Rest Day entfernt: heute ist wieder Training geplant');
+      break;
+    }
+    case 'toggle-rotation':
+      state.settings.rotationMode = !state.settings.rotationMode;
+      saveState();
+      renderMehr();
+      toast(state.settings.rotationMode ? 'Rotierender Plan aktiv 🔁' : 'Feste Wochentage aktiv');
+      break;
     case 'weight-open': showWeightModal(''); break;
     case 'weight-edit': showWeightModal(el.dataset.id); break;
     case 'weight-save': saveWeightFromModal(el.dataset.edit || ''); break;
