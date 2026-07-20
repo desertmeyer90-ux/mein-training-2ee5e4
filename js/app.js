@@ -858,12 +858,16 @@ function renderDayEditor(day) {
 
   const rows = day.exercises.map(function (e, i) {
     const ww = (e.workWeight === null || e.workWeight === undefined || e.workWeight === '') ? '' : e.workWeight;
-    return '<div class="edit-row">' +
-      '<input type="text" value="' + esc(e.name) + '" data-edit-field="name" data-i="' + i + '" placeholder="Übung">' +
-      '<input type="number" min="1" max="8" value="' + e.sets + '" data-edit-field="sets" data-i="' + i + '">' +
+    return '<div class="edit-item" data-item="' + i + '">' +
+      '<div class="edit-row">' +
+      '<button type="button" class="drag-handle" data-drag="' + i + '" aria-label="Übung verschieben: halten und ziehen">⠿</button>' +
+      '<input type="text" value="' + esc(e.name) + '" data-edit-field="name" data-i="' + i + '" placeholder="Übung" autocomplete="off" spellcheck="false" enterkeyhint="done">' +
+      '<input type="number" min="1" max="8" inputmode="numeric" value="' + e.sets + '" data-edit-field="sets" data-i="' + i + '">' +
       '<input type="text" value="' + esc(e.reps) + '" data-edit-field="reps" data-i="' + i + '" placeholder="8-10">' +
-      '<input type="number" step="2.5" min="0" value="' + esc(ww) + '" data-edit-field="workWeight" data-i="' + i + '" placeholder="kg">' +
-      '<button class="rm-ex" data-action="rm-ex" data-i="' + i + '" title="Übung entfernen">✕</button>' +
+      '<input type="number" step="2.5" min="0" inputmode="decimal" value="' + esc(ww) + '" data-edit-field="workWeight" data-i="' + i + '" placeholder="kg">' +
+      '<button type="button" class="ex-menu-btn" data-action="ex-menu" data-i="' + i + '" aria-label="Aktionen für ' + esc(e.name || 'Übung ' + (i + 1)) + '">⋯</button>' +
+      '</div>' +
+      '<div class="ac-slot" data-ac-slot="' + i + '"></div>' +
       '</div>';
   }).join('');
 
@@ -873,8 +877,10 @@ function renderDayEditor(day) {
     '<input type="text" value="' + esc(day.name) + '" data-edit-field="dayname" placeholder="Name des Tages">' +
     '<select data-edit-field="weekday">' + wdOptions + '</select>' +
     '</div>' +
-    '<div class="edit-cols"><span>Übung</span><span>Sätze</span><span>Wdh.</span><span>kg</span><span></span></div>' +
-    rows +
+    (day.exercises.length
+      ? '<div class="edit-cols"><span></span><span>Übung</span><span>Sätze</span><span>Wdh.</span><span>kg</span><span></span></div>'
+      : '<p class="sub" style="margin:2px 2px 8px">Noch keine Übungen: tippe unten auf „+ Übung hinzufügen".</p>') +
+    '<div id="edit-ex-list">' + rows + '</div>' +
     '<button class="btn btn-ghost" data-action="add-ex" style="margin-top:4px">+ Übung hinzufügen</button>' +
     '<div class="btn-row">' +
     '<button class="btn btn-ghost" data-action="cancel-edit">Abbrechen</button>' +
@@ -904,7 +910,7 @@ function saveEditDay() {
       const w = num(e.workWeight);
       return {
         id: e.id || uid(),
-        name: String(e.name).trim(),
+        name: canonicalExName(e.name) || String(e.name).trim(),
         sets: Math.min(8, Math.max(1, parseInt(e.sets, 10) || 3)),
         reps: String(e.reps || '').trim() || '8-10',
         workWeight: (!isNaN(w) && w > 0) ? w : null,
@@ -918,12 +924,298 @@ function saveEditDay() {
     return;
   }
 
+  /* Versehentliche Doppelungen abfangen („Bankdrücken" vs. „bankdrücken") */
+  const seenNames = {};
+  let dupName = null;
+  editingCopy.exercises.forEach(function (e) {
+    const k = normExName(e.name);
+    if (seenNames[k] && !dupName) dupName = e.name;
+    seenNames[k] = true;
+  });
+  if (dupName && !confirm('„' + dupName + '" steht doppelt in diesem Tag. Trotzdem speichern?')) return;
+
   Object.assign(day, editingCopy);
   editingDayId = null;
   editingCopy = null;
   saveState();
   renderPlan();
   toast('Plan gespeichert ✓');
+}
+
+/* ===== Plan-Editor QoL (v7.7): Autocomplete, Sortieren, Übungs-Menü ===== */
+
+/* Namen vergleichbar machen: Groß/Klein, Leerzeichen, Bindestriche und
+   Klammern spielen keine Rolle („Bank Drücken" == „bankdrücken") */
+function normExName(s) {
+  return String(s || '').toLowerCase().replace(/ß/g, 'ss').replace(/[^a-z0-9äöü]/g, '');
+}
+
+/* Falls ein getippter Name einer Katalog-Übung entspricht: die offizielle
+   Schreibweise übernehmen (dann passen Bilder, Cues und Progression) */
+function canonicalExName(name) {
+  const k = normExName(name);
+  if (!k) return null;
+  const names = Object.keys(EX_INFO);
+  for (let i = 0; i < names.length; i++) {
+    if (normExName(names[i]) === k) return names[i];
+  }
+  return null;
+}
+
+/* Alle bekannten Übungsnamen: Katalog + selbst angelegte aus Plänen und Verlauf */
+function knownExerciseNames() {
+  const seen = {};
+  const names = [];
+  function add(n) {
+    const k = normExName(n);
+    if (!k || seen[k]) return;
+    seen[k] = true;
+    names.push(String(n).trim());
+  }
+  Object.keys(EX_INFO).forEach(add);
+  Object.keys(state.plans).forEach(function (pk) {
+    state.plans[pk].days.forEach(function (d) {
+      d.exercises.forEach(function (e) { add(e.name); });
+    });
+  });
+  state.logs.forEach(function (l) {
+    l.entries.forEach(function (en) { add(en.name); });
+  });
+  return names;
+}
+
+/* Wie kürzlich eine Übung trainiert wurde (größer = zuletzt), für die Reihenfolge */
+function exRecency() {
+  const r = {};
+  state.logs.forEach(function (l, i) {
+    l.entries.forEach(function (en) { r[normExName(en.name)] = i + 1; });
+  });
+  return r;
+}
+
+/* Letztes benutztes Arbeitsgewicht (nur abgehakte Arbeitssätze) */
+function lastWeightByName(name) {
+  const key = normExName(name);
+  for (let i = state.logs.length - 1; i >= 0; i--) {
+    const entries = state.logs[i].entries || [];
+    for (let j = 0; j < entries.length; j++) {
+      if (normExName(entries[j].name) !== key) continue;
+      let best = 0;
+      (entries[j].sets || []).forEach(function (s) {
+        if (s.warmup || !s.done) return;
+        const w = num(s.weight);
+        if (!isNaN(w) && w > best) best = w;
+      });
+      if (best > 0) return best;
+    }
+  }
+  return 0;
+}
+
+/* --- Autocomplete unter dem Übungsnamen-Feld --- */
+
+let acCloseTimer = null;
+
+function closeAcList() {
+  document.querySelectorAll('.ac-slot').forEach(function (s) { s.innerHTML = ''; });
+}
+
+function acSuggestions(query, rowIdx) {
+  const q = normExName(query);
+  if (q.length < 2) return [];
+  const rec = exRecency();
+  const inDay = {};
+  editingCopy.exercises.forEach(function (e, i) {
+    if (i !== rowIdx) inDay[normExName(e.name)] = true;
+  });
+  const list = knownExerciseNames().filter(function (n) {
+    if (normExName(n).indexOf(q) !== -1) return true;
+    const m = exMuscle(n);
+    return m ? normExName(muscleLabel(m)).indexOf(q) !== -1 : false;
+  });
+  list.sort(function (a, b) {
+    const ra = rec[normExName(a)] || 0;
+    const rb = rec[normExName(b)] || 0;
+    if (ra !== rb) return rb - ra; /* zuletzt benutzte zuerst */
+    return a.localeCompare(b, 'de');
+  });
+  return list.slice(0, 6).map(function (n) {
+    return { name: n, taken: !!inDay[normExName(n)], lastW: lastWeightByName(n) };
+  });
+}
+
+function renderAcList(i, query) {
+  closeAcList();
+  if (!editingCopy) return;
+  const slot = document.querySelector('.ac-slot[data-ac-slot="' + i + '"]');
+  if (!slot) return;
+  const items = acSuggestions(query, i);
+  /* Steht schon exakt der vorgeschlagene Name im Feld: nichts anzeigen */
+  if (!items.length || (items.length === 1 && items[0].name === String(query).trim())) return;
+  slot.innerHTML = '<div class="ac-list">' + items.map(function (it) {
+    const sub = [];
+    const m = exMuscle(it.name);
+    if (m) sub.push(muscleLabel(m));
+    if (it.lastW > 0) sub.push('zuletzt ' + fmtKg(it.lastW));
+    return '<button type="button" class="ac-item' + (it.taken ? ' taken' : '') + '" data-action="ac-pick" data-i="' + i + '" data-name="' + esc(it.name) + '">' +
+      exImagesHtml(it.name, 'ex-thumb') +
+      '<span class="grow">' + esc(it.name) +
+      (sub.length ? '<span class="ac-sub">' + esc(sub.join(' · ')) + '</span>' : '') +
+      '</span>' +
+      (it.taken ? '<span class="ac-flag">schon im Tag ✓</span>' : '') +
+      '</button>';
+  }).join('') + '</div>';
+  slot.scrollIntoView({ block: 'nearest' });
+}
+
+/* --- Sortieren per Ziehen am Griff (⠿) --- */
+
+let dragCtx = null;
+
+function dragStart(e) {
+  const handle = e.target.closest('[data-drag]');
+  if (!handle || !editingCopy) return;
+  const item = handle.closest('.edit-item');
+  const list = document.getElementById('edit-ex-list');
+  if (!item || !list) return;
+  e.preventDefault();
+  closeAcList();
+  const items = Array.prototype.slice.call(list.children);
+  const from = parseInt(item.dataset.item, 10);
+  dragCtx = {
+    from: from,
+    to: from,
+    item: item,
+    items: items,
+    tops: items.map(function (el) { return el.getBoundingClientRect().top + window.scrollY; }),
+    heights: items.map(function (el) { return el.offsetHeight; }),
+    startY: e.clientY + window.scrollY,
+    pointerId: e.pointerId
+  };
+  item.classList.add('drag-src');
+  try { handle.setPointerCapture(e.pointerId); } catch (err) { /* ältere Browser */ }
+  if (navigator.vibrate && !prefersReducedMotion()) navigator.vibrate(10);
+}
+
+function dragMove(e) {
+  if (!dragCtx || e.pointerId !== dragCtx.pointerId) return;
+  e.preventDefault();
+  /* Nahe am Bildschirmrand automatisch mitscrollen (lange Tage) */
+  if (e.clientY < 110) window.scrollBy(0, -12);
+  else if (e.clientY > window.innerHeight - 130) window.scrollBy(0, 12);
+  const dy = (e.clientY + window.scrollY) - dragCtx.startY;
+  dragCtx.item.style.transform = 'translateY(' + dy + 'px)';
+  const center = dragCtx.tops[dragCtx.from] + dragCtx.heights[dragCtx.from] / 2 + dy;
+  let to = dragCtx.from;
+  for (let j = dragCtx.from - 1; j >= 0; j--) {
+    if (center < dragCtx.tops[j] + dragCtx.heights[j] / 2) to = j;
+  }
+  for (let j = dragCtx.from + 1; j < dragCtx.items.length; j++) {
+    if (center > dragCtx.tops[j] + dragCtx.heights[j] / 2) to = j;
+  }
+  dragCtx.to = to;
+  /* Die anderen Zeilen machen sichtbar Platz */
+  dragCtx.items.forEach(function (el, j) {
+    if (j === dragCtx.from) return;
+    let shift = 0;
+    if (j > dragCtx.from && j <= to) shift = -dragCtx.heights[dragCtx.from];
+    else if (j < dragCtx.from && j >= to) shift = dragCtx.heights[dragCtx.from];
+    el.style.transform = shift ? 'translateY(' + shift + 'px)' : '';
+  });
+}
+
+function dragEnd(e) {
+  if (!dragCtx || e.pointerId !== dragCtx.pointerId) return;
+  const from = dragCtx.from;
+  const to = dragCtx.to;
+  dragCtx.items.forEach(function (el) { el.style.transform = ''; el.classList.remove('drag-src'); });
+  dragCtx = null;
+  if (editingCopy && to !== from) {
+    const moved = editingCopy.exercises.splice(from, 1)[0];
+    editingCopy.exercises.splice(to, 0, moved);
+    if (navigator.vibrate && !prefersReducedMotion()) navigator.vibrate(10);
+  }
+  renderPlan();
+}
+
+function dragCancel(e) {
+  if (!dragCtx || e.pointerId !== dragCtx.pointerId) return;
+  dragCtx.items.forEach(function (el) { el.style.transform = ''; el.classList.remove('drag-src'); });
+  dragCtx = null;
+  renderPlan();
+}
+
+/* --- Übungs-Menü (⋯) im Editor --- */
+
+function editorExName(e, i) {
+  return String(e.name || '').trim() || 'Übung ' + (i + 1);
+}
+
+function showExMenuSheet(i) {
+  if (!editingCopy) return;
+  const e = editingCopy.exercises[i];
+  if (!e) return;
+  const n = editingCopy.exercises.length;
+  const others = currentPlan().days.filter(function (d) { return d.id !== editingDayId; });
+  function item(action, icon, label, extraCls) {
+    return '<button class="sheet-item' + (extraCls || '') + '" data-action="' + action + '" data-i="' + i + '">' +
+      '<span class="sheet-ico">' + icon + '</span>' + label + '</button>';
+  }
+  let items = '';
+  if (i > 0) items += item('exm-up', '⬆️', 'Nach oben');
+  if (i < n - 1) items += item('exm-down', '⬇️', 'Nach unten');
+  if (i > 1) items += item('exm-top', '⏫', 'An den Anfang');
+  if (i < n - 2) items += item('exm-bottom', '⏬', 'Ans Ende');
+  items += item('exm-dup', '📑', 'Duplizieren');
+  if (others.length) {
+    items += item('exm-move', '📤', 'In anderen Tag verschieben');
+    items += item('exm-copy', '📄', 'In anderen Tag kopieren');
+  }
+  items += item('exm-del', '🗑', 'Löschen', ' danger');
+  const root = document.getElementById('modal-root');
+  root.innerHTML =
+    '<div class="modal-backdrop" data-action="close-modal">' +
+    '<div class="modal-sheet" data-action="noop">' +
+    '<h3 style="margin:0 0 12px">' + esc(editorExName(e, i)) + '</h3>' +
+    '<div class="sheet-list">' + items + '</div>' +
+    '<button class="btn btn-ghost" data-action="close-modal" style="margin-top:12px">Abbrechen</button>' +
+    '</div></div>';
+  root.classList.add('open');
+}
+
+function showDayPickSheet(i, op) {
+  if (!editingCopy) return;
+  const e = editingCopy.exercises[i];
+  if (!e) return;
+  const others = currentPlan().days.filter(function (d) { return d.id !== editingDayId; });
+  const items = others.map(function (d) {
+    return '<button class="sheet-item" data-action="exm-to-day" data-i="' + i + '" data-op="' + op + '" data-day="' + d.id + '">' +
+      '<span class="badge">' + WEEKDAYS_SHORT[d.weekday] + '</span>' +
+      '<span class="grow">' + esc(dayTitle(d)) +
+      '<span class="ac-sub">' + d.exercises.length + ' ' + (d.exercises.length === 1 ? 'Übung' : 'Übungen') + '</span></span>' +
+      '</button>';
+  }).join('');
+  const root = document.getElementById('modal-root');
+  root.innerHTML =
+    '<div class="modal-backdrop" data-action="close-modal">' +
+    '<div class="modal-sheet" data-action="noop">' +
+    '<h3 style="margin:0 0 4px">' + (op === 'move' ? 'Verschieben' : 'Kopieren') + '</h3>' +
+    '<p class="sub" style="margin:0 0 12px">Wohin mit „' + esc(editorExName(e, i)) + '"?</p>' +
+    '<div class="sheet-list">' + items + '</div>' +
+    '<button class="btn btn-ghost" data-action="close-modal" style="margin-top:12px">Abbrechen</button>' +
+    '</div></div>';
+  root.classList.add('open');
+}
+
+function moveEditEx(i, to) {
+  if (!editingCopy) return;
+  const arr = editingCopy.exercises;
+  if (i < 0 || i >= arr.length) return;
+  to = Math.min(arr.length - 1, Math.max(0, to));
+  if (to === i) return;
+  arr.splice(to, 0, arr.splice(i, 1)[0]);
+  closeModal();
+  renderPlan();
 }
 
 /* ===== Ansicht: Workout ===== */
@@ -2861,13 +3153,36 @@ function showDiagModal() {
 /* ===== Toast ===== */
 
 let toastTimeout = null;
+let toastActionFn = null;
 
 function toast(msg) {
   const t = document.getElementById('toast');
+  toastActionFn = null;
+  t.classList.remove('has-action');
   t.textContent = msg;
   t.classList.add('show');
   clearTimeout(toastTimeout);
   toastTimeout = setTimeout(function () { t.classList.remove('show'); }, 2200);
+}
+
+/* Toast mit Aktions-Knopf, z. B. „Rückgängig" nach dem Löschen */
+function toastAction(msg, label, fn) {
+  const t = document.getElementById('toast');
+  toastActionFn = fn;
+  t.textContent = msg;
+  const btn = document.createElement('button');
+  btn.className = 'toast-btn';
+  btn.dataset.action = 'toast-action';
+  btn.textContent = label;
+  t.appendChild(btn);
+  t.classList.add('show');
+  t.classList.add('has-action'); /* nur dann darf der Toast Tipps annehmen */
+  clearTimeout(toastTimeout);
+  toastTimeout = setTimeout(function () {
+    t.classList.remove('show');
+    t.classList.remove('has-action');
+    toastActionFn = null;
+  }, 6000);
 }
 
 /* ===== Events ===== */
@@ -2893,7 +3208,13 @@ function handleAction(action, el) {
     }
     case 'timer': startTimer(parseInt(el.dataset.sec, 10)); break;
     case 'edit-day': startEditDay(el.dataset.day); break;
-    case 'cancel-edit': editingDayId = null; editingCopy = null; renderPlan(); break;
+    case 'cancel-edit': {
+      const orig = findDay(editingDayId);
+      if (editingCopy && orig && JSON.stringify(editingCopy) !== JSON.stringify(orig)) {
+        if (!confirm('Ungespeicherte Änderungen verwerfen?')) break;
+      }
+      editingDayId = null; editingCopy = null; renderPlan(); break;
+    }
     case 'save-day': saveEditDay(); break;
     case 'add-ex':
       if (editingCopy) {
@@ -2906,12 +3227,106 @@ function handleAction(action, el) {
         }
       }
       break;
-    case 'rm-ex':
-      if (editingCopy) {
-        editingCopy.exercises.splice(parseInt(el.dataset.i, 10), 1);
+    case 'ac-pick': {
+      if (!editingCopy) break;
+      if (el.classList.contains('taken')) { toast('Diese Übung ist an dem Tag schon eingeplant'); break; }
+      const i = parseInt(el.dataset.i, 10);
+      const exObj = editingCopy.exercises[i];
+      if (!exObj) break;
+      exObj.name = el.dataset.name;
+      /* Letztes Gewicht vorschlagen, wenn das kg-Feld noch leer ist */
+      const cur = num(exObj.workWeight);
+      const lw = lastWeightByName(exObj.name);
+      if ((isNaN(cur) || cur <= 0) && lw > 0) exObj.workWeight = lw;
+      renderPlan();
+      const kg = document.querySelector('input[data-edit-field="workWeight"][data-i="' + i + '"]');
+      if (kg) { kg.focus(); kg.select(); }
+      break;
+    }
+    case 'ex-menu': showExMenuSheet(parseInt(el.dataset.i, 10)); break;
+    case 'exm-up': moveEditEx(parseInt(el.dataset.i, 10), parseInt(el.dataset.i, 10) - 1); break;
+    case 'exm-down': moveEditEx(parseInt(el.dataset.i, 10), parseInt(el.dataset.i, 10) + 1); break;
+    case 'exm-top': moveEditEx(parseInt(el.dataset.i, 10), 0); break;
+    case 'exm-bottom': moveEditEx(parseInt(el.dataset.i, 10), (editingCopy ? editingCopy.exercises.length : 1) - 1); break;
+    case 'exm-dup': {
+      if (!editingCopy) break;
+      const i = parseInt(el.dataset.i, 10);
+      const src = editingCopy.exercises[i];
+      if (!src) break;
+      const copy = clone(src);
+      copy.id = uid();
+      editingCopy.exercises.splice(i + 1, 0, copy);
+      closeModal();
+      renderPlan();
+      toast('Übung dupliziert');
+      break;
+    }
+    case 'exm-move':
+    case 'exm-copy': {
+      if (!editingCopy) break;
+      const i = parseInt(el.dataset.i, 10);
+      const src = editingCopy.exercises[i];
+      if (!src) break;
+      if (!String(src.name || '').trim()) { toast('Bitte erst einen Übungsnamen eingeben'); break; }
+      showDayPickSheet(i, action === 'exm-move' ? 'move' : 'copy');
+      break;
+    }
+    case 'exm-to-day': {
+      if (!editingCopy) { closeModal(); break; }
+      const i = parseInt(el.dataset.i, 10);
+      const src = editingCopy.exercises[i];
+      const target = findDay(el.dataset.day);
+      if (!src || !target) { closeModal(); break; }
+      const key = normExName(src.name);
+      if (target.exercises.some(function (x) { return normExName(x.name) === key; })) {
+        toast('„' + src.name + '" gibt es an dem Tag schon');
+        break;
+      }
+      const copy = clone(src);
+      copy.id = uid();
+      target.exercises.push(copy);
+      if (el.dataset.op === 'move') {
+        /* Verschieben gilt sofort: auch aus dem echten Quell-Tag entfernen,
+           damit Abbrechen die Übung nicht doppelt zurückbringt */
+        editingCopy.exercises.splice(i, 1);
+        const srcDay = findDay(editingDayId);
+        if (srcDay) {
+          srcDay.exercises = srcDay.exercises.filter(function (x) { return x.id !== src.id; });
+        }
+      }
+      saveState();
+      closeModal();
+      renderPlan();
+      toast((el.dataset.op === 'move' ? 'Verschoben' : 'Kopiert') + ': ' + WEEKDAYS_SHORT[target.weekday] + ' · ' + dayTitle(target) + ' ✓');
+      break;
+    }
+    case 'exm-del': {
+      if (!editingCopy) break;
+      const i = parseInt(el.dataset.i, 10);
+      const removed = editingCopy.exercises[i];
+      if (!removed) break;
+      editingCopy.exercises.splice(i, 1);
+      closeModal();
+      renderPlan();
+      toastAction('Übung entfernt', 'Rückgängig', function () {
+        if (!editingCopy) return;
+        editingCopy.exercises.splice(Math.min(i, editingCopy.exercises.length), 0, removed);
         renderPlan();
+      });
+      break;
+    }
+    case 'toast-action': {
+      if (toastActionFn) {
+        const fn = toastActionFn;
+        toastActionFn = null;
+        fn();
+        const t = document.getElementById('toast');
+        t.classList.remove('show');
+        t.classList.remove('has-action');
+        clearTimeout(toastTimeout);
       }
       break;
+    }
     case 'toggle-log':
       expandedLogId = expandedLogId === el.dataset.log ? null : el.dataset.log;
       renderVerlauf();
@@ -3253,9 +3668,40 @@ function init() {
       else {
         const exObj = editingCopy.exercises[parseInt(t.dataset.i, 10)];
         if (exObj) exObj[f] = t.value;
+        if (f === 'name') {
+          clearTimeout(acCloseTimer);
+          renderAcList(parseInt(t.dataset.i, 10), t.value);
+        }
       }
     }
   });
+
+  /* Autocomplete: beim Fokussieren zeigen, beim Verlassen/Tippen daneben schließen */
+  document.addEventListener('focusin', function (e) {
+    const t = e.target;
+    if (t.dataset && t.dataset.editField === 'name' && editingCopy) {
+      clearTimeout(acCloseTimer);
+      renderAcList(parseInt(t.dataset.i, 10), t.value);
+    }
+  });
+  document.addEventListener('focusout', function (e) {
+    const t = e.target;
+    if (t.dataset && t.dataset.editField === 'name') {
+      clearTimeout(acCloseTimer);
+      acCloseTimer = setTimeout(closeAcList, 400); /* Verzögert, damit ein Tipp auf einen Vorschlag noch ankommt */
+    }
+  });
+  document.addEventListener('click', function (e) {
+    if (!e.target.closest('.ac-list') && !(e.target.dataset && e.target.dataset.editField === 'name')) {
+      closeAcList();
+    }
+  });
+
+  /* Übungen sortieren: Ziehen am Griff (Pointer Events, Scrollen bleibt frei) */
+  document.addEventListener('pointerdown', dragStart);
+  document.addEventListener('pointermove', dragMove, { passive: false });
+  document.addEventListener('pointerup', dragEnd);
+  document.addEventListener('pointercancel', dragCancel);
 
   /* Auch das select im Editor abfangen (change statt input) */
   document.getElementById('main').addEventListener('change', function (e) {

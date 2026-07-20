@@ -280,7 +280,7 @@ button { font-family: inherit; }
 /* ===== Plan-Bearbeitung ===== */
 .edit-row {
   display: grid;
-  grid-template-columns: 1fr 42px 54px 58px 28px;
+  grid-template-columns: 24px 1fr 40px 52px 56px 28px;
   gap: 5px;
   margin-bottom: 8px;
   align-items: center;
@@ -317,7 +317,7 @@ button { font-family: inherit; }
 
 .edit-cols {
   display: grid;
-  grid-template-columns: 1fr 42px 54px 58px 28px;
+  grid-template-columns: 24px 1fr 40px 52px 56px 28px;
   gap: 5px;
   font-size: 0.68rem;
   color: var(--muted);
@@ -1274,3 +1274,100 @@ select:focus-visible,
 /* ===== iOS-PWA: Notch/Statusleiste freihalten ===== */
 .app-header { padding-top: calc(14px + env(safe-area-inset-top)); }
 .timer-bar { top: calc(54px + env(safe-area-inset-top)); }
+
+/* =====================================================
+   v7.7: Plan-Editor QoL
+   Autocomplete, Sortier-Griff, Übungs-Menü, Undo-Toast
+   ===================================================== */
+
+/* Griff zum Sortieren: nur hier ist das Scrollen gesperrt,
+   der Rest der Liste scrollt ganz normal */
+.drag-handle {
+  background: transparent;
+  border: none;
+  color: var(--muted);
+  font-size: 1rem;
+  padding: 12px 2px;
+  cursor: grab;
+  touch-action: none;
+  -webkit-user-select: none;
+  user-select: none;
+  border-radius: 8px;
+}
+
+#edit-ex-list .edit-item { transition: transform 0.15s ease; }
+.edit-item.drag-src { transition: none; position: relative; z-index: 5; }
+.edit-item.drag-src .edit-row {
+  background: var(--card2);
+  border-radius: 12px;
+  box-shadow: 0 8px 22px rgba(0, 0, 0, 0.5);
+  outline: 1px solid var(--accent);
+}
+
+.ex-menu-btn {
+  background: transparent;
+  border: none;
+  color: var(--muted);
+  font-size: 1.15rem;
+  padding: 10px 2px;
+  cursor: pointer;
+  border-radius: 8px;
+}
+.ex-menu-btn:active { color: var(--text); }
+
+/* Vorschlagsliste direkt unter dem Übungsnamen-Feld (im Textfluss,
+   damit die Bildschirmtastatur sie nicht verdeckt) */
+.ac-list { display: flex; flex-direction: column; gap: 6px; margin: 2px 0 10px; }
+.ac-item {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  background: var(--card2);
+  border: 1px solid var(--border);
+  border-radius: 12px;
+  padding: 7px 10px;
+  min-height: 48px;
+  color: var(--text);
+  text-align: left;
+  font-size: 0.88rem;
+  cursor: pointer;
+}
+.ac-item:active { border-color: var(--accent); }
+.ac-item .ex-thumb { width: 40px; min-width: 40px; border-radius: 8px; }
+.ac-item .grow { flex: 1; min-width: 0; }
+.ac-item.taken { opacity: 0.55; }
+.ac-sub { display: block; color: var(--muted); font-size: 0.72rem; margin-top: 1px; }
+.ac-flag { color: var(--accent); font-size: 0.72rem; flex-shrink: 0; }
+
+/* Übungs-Menü als Bottom Sheet */
+.sheet-list { display: flex; flex-direction: column; gap: 6px; }
+.sheet-item {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  background: var(--card2);
+  border: 1px solid var(--border);
+  border-radius: 12px;
+  padding: 12px;
+  min-height: 48px;
+  color: var(--text);
+  text-align: left;
+  font-size: 0.92rem;
+  cursor: pointer;
+}
+.sheet-item:active { border-color: var(--accent); }
+.sheet-item.danger { color: var(--danger); }
+.sheet-ico { width: 24px; text-align: center; flex-shrink: 0; }
+
+/* Aktions-Knopf im Toast (z. B. Rückgängig): nur dann ist der Toast antippbar */
+#toast.has-action { pointer-events: auto; }
+#toast .toast-btn {
+  background: transparent;
+  border: none;
+  color: var(--accent);
+  font-weight: 700;
+  font-size: 0.88rem;
+  margin-left: 10px;
+  padding: 4px 2px;
+  cursor: pointer;
+}
